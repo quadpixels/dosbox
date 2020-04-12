@@ -59,6 +59,9 @@ static struct termios consolesettings;
 #endif
 int old_cursor_state;
 
+#include "../mydebug.h"
+#include <string.h>
+
 // Forwards
 static void DrawCode(void);
 static void DEBUG_RaiseTimerIrq(void);
@@ -166,6 +169,8 @@ static list<string>::iterator histBuffPos = histBuff.end();
 /***********/
 /* Helpers */
 /***********/
+
+void DebugToMyDebugViz();
 
 Bit32u PhysMakeProt(Bit16u selector, Bit32u offset)
 {
@@ -708,8 +713,8 @@ bool DEBUG_ExitLoop(void)
 static void DrawData(void) {
 	
 	Bit8u ch;
-	Bit32u add = dataOfs;
-	Bit32u address;
+	Bit32u add = dataOfs, add0 = dataOfs;
+	Bit32u address, address0 = GetAddress(dataSeg, add);
 	/* Data win */	
 	for (int y=0; y<8; y++) {
 		// Address
@@ -725,6 +730,13 @@ static void DrawData(void) {
 		};
 	}	
 	wrefresh(dbg.win_data);
+
+	// MyDebug!
+	char info[200];
+	sprintf(info, "Address updated from DrawData in debugger: %04X:%08X (%08X)", dataSeg, add0, address0);
+	MyDebugViewWindow()->address = address0;
+	void MyDebugSetInfo(const char* x);
+	DebugToMyDebugViz();
 };
 
 static void DrawRegisters(void) {
@@ -1649,6 +1661,9 @@ Bit32u DEBUG_CheckKeys(void) {
 			break;
 		case KEY_PPAGE :	dataOfs -= 16;	break;
 		case KEY_NPAGE :	dataOfs += 16;	break;
+
+		case '[': dataOfs -= 4096; break;
+		case ']': dataOfs += 4096; break;
 
 		case KEY_DOWN:	// down 
 				if (codeViewData.cursorPos<9) codeViewData.cursorPos++;
@@ -2582,7 +2597,27 @@ bool DEBUG_HeavyIsBreakpoint(void) {
 
 #endif // HEAVY DEBUG
 
+void DebugToMyDebugViz() {
+	const int step = MyDebugViewWindow()->step;
+	{
+		Bit32u add = dataOfs;
+		Bit8u ch;
+		int offset = 0, footprint = 0;
+		Bit32u address = MyDebugViewWindow()->address; /*GetAddress(dataSeg, add);*/
+		Bit32u address0 = address, add0 = add;
+		MyDebugStartUpdatingBytes();
+		while (offset < 1024*1024*3) {
+			//address = GetAddress(dataSeg, add);
+			if (mem_readb_checked(address, &ch)) ch=0;
+			bool ok = MyDebugUpdateByte(offset, ch);
+			if (!ok) break;
+
+			address += step;
+			add += step; footprint += step;
+			offset += 1;
+		}
+		MyDebugEndUpdateBytes();
+	}
+}
 
 #endif // DEBUG
-
-

@@ -50,11 +50,15 @@
 #include "cross.h"
 #include "control.h"
 
+#include "../mydebug.h"
+
 #define MAPPERFILE "mapper-" VERSION ".map"
 //#define DISABLE_JOYSTICK
 
 #if C_OPENGL
 #include "SDL_opengl.h"
+
+extern void DebugToMyDebugViz();
 
 #ifndef APIENTRY
 #define APIENTRY
@@ -1540,6 +1544,11 @@ void GFX_Events() {
 	last_check = current_check;
 #endif
 
+	// My memory visualizer
+	if (MyDebugShouldUpdate()) {
+		DebugToMyDebugViz();
+	}
+
 	SDL_Event event;
 #if defined (REDUCE_JOYSTICK_POLLING)
 	static int poll_delay = 0;
@@ -1965,6 +1974,8 @@ static void erasemapperfile() {
 //extern void UI_Init(void);
 int main(int argc, char* argv[]) {
 	try {
+		StartMyDebugThread(argc, argv);
+
 		CommandLine com_line(argc,argv);
 		Config myconf(&com_line);
 		control=&myconf;
