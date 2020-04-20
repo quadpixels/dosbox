@@ -730,13 +730,6 @@ static void DrawData(void) {
 		};
 	}	
 	wrefresh(dbg.win_data);
-
-	// MyDebug!
-	char info[200];
-	sprintf(info, "Address updated from DrawData in debugger: %04X:%08X (%08X)", dataSeg, add0, address0);
-	MyDebugViewWindow()->address = address0;
-	void MyDebugSetInfo(const char* x);
-	DebugToMyDebugViz();
 };
 
 static void DrawRegisters(void) {
@@ -2600,6 +2593,7 @@ bool DEBUG_HeavyIsBreakpoint(void) {
 void DebugToMyDebugViz() {
 	const int step = MyDebugViewWindow()->step;
 	{
+		// Memory Visualizer
 		Bit32u add = dataOfs;
 		Bit8u ch;
 		int offset = 0, footprint = 0;
@@ -2617,6 +2611,21 @@ void DebugToMyDebugViz() {
 			offset += 1;
 		}
 		MyDebugEndUpdateBytes();
+
+		// Texture Viewer
+		const unsigned pa = MyDebugViewWindow()->address,
+				           size = 320 * 240;
+		const unsigned line_stride = 320;
+		MyDebugTextureViewStartUpdatingBytes();
+		for (unsigned a = pa, s = 0; s < size; a++, s++) {
+			if (mem_readb_checked(a, &ch)) ch=0;
+			const unsigned rem = s % line_stride, line_begin = s - rem, line_flipped = size - line_begin, s_flipped = line_flipped + rem;
+			MyDebugTextureViewUpdateByte(s_flipped, ch); // Updates one byte in the texture viewer
+		}
+		MyDebugTextureViewEndUpdatingBytes();
+		char buf[100];
+		sprintf(buf, "Texture at %08X\n", pa);
+		MyDebugTextureViewSetInfo(buf);
 	}
 }
 

@@ -22,8 +22,13 @@ struct ViewWindow {
 	ViewWindow() : address(0), step(2) { }
 };
 
+struct MyView {
+	virtual void Render() = 0;
+	virtual ~MyView() { }
+};
+
 struct PerRowHistogram;
-struct MemView {
+struct MemView : public MyView {
 	MemView(int _disp_w, int _disp_h);
 
 	void LoadDummy();
@@ -44,7 +49,7 @@ struct MemView {
   	}
   }
 
-	void Render();
+	void Render() override;
 
 	// Start writing bytes into the visualization area from DosBox
 	void StartUpdateBytes() { }
@@ -126,6 +131,22 @@ struct PerRowHistogram {
 	void LoadDummy();
 };
 
+struct TextureView : public MyView {
+	std::vector<unsigned char> bytes;
+	std::vector<unsigned char> pixels; // Currently, assume pixels == bytes
+	BytesToPixelIntf* bytes2pixel;
+	std::string title;
+	int disp_w, disp_h;
+	int top, left;
+	TextureView(int w, int h, int size);
+	void Render() override;
+	void UpdateByte(int offset, unsigned char b);
+	void LoadDummy();
+	void EndUpdateBytes();
+	void ConvertToPixels();
+	void SetInfo(const char* x) { title = std::string(x); }
+};
+
 // For usage from DosBox
 void StartMyDebugThread(int argc, char** argv); // Launches visualizer window
 void MyDebugStartUpdatingBytes();               // Start update bytes for view window
@@ -136,5 +157,10 @@ ViewWindow* MyDebugViewWindow();
 bool MyDebugShouldUpdate();
 void MyDebugOnWriteByte(unsigned phys_addr, int size);
 void MyDebugOnReadByte(unsigned phys_addr, int size);
+
+void MyDebugTextureViewStartUpdatingBytes();
+void MyDebugTextureViewUpdateByte(int, unsigned char); // Updates one byte in the texture viewer
+void MyDebugTextureViewEndUpdatingBytes();
+void MyDebugTextureViewSetInfo(const char* x);
 
 #endif

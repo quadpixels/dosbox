@@ -8,6 +8,7 @@
 #include <GL/glut.h>
 #include <sys/time.h>
 #include <X11/Xlib.h>
+#include <assert.h>
 
 // Build standalone version:
 // g++-8 mydebug.cpp -lGL -lGLEW -lglut -I. -DMEM_VIZ_STANDALONE -lpthread -lX11
@@ -38,6 +39,22 @@ public:
 	unsigned int Format() override { return GL_RGB; }
 };
 
+class Bytes256ColorToRGB : public BytesToPixelIntf {
+public:
+	int NumBytesPerPixel() override { return 1; }
+	int NumPixelDataChannels() override { return 3; }
+	void BytesToPixel(unsigned char* byte_ptr, unsigned char* pixel_ptr) override {
+		unsigned char c = *byte_ptr;
+		unsigned char blue = (unsigned char)(255 * (c & 3) / 4);
+		unsigned char green= (unsigned char)(255 * ((c >> 2) & 7) / 8);
+		unsigned char red  = (unsigned char)(255 * ((c >> 5) & 7) / 8);
+		pixel_ptr[0] = c;//blue;
+		pixel_ptr[1] = c;//green;
+		pixel_ptr[2] = c;//red;
+	}
+	unsigned int Format() override { return GL_RGB; }
+};
+
 void render();
 void update();
 void keyboard(unsigned char, int, int);
@@ -45,7 +62,7 @@ void keyboard2(int, int, int);
 void motion(int x, int y);
 void motion_passive(int x, int y);
 void mouse(int, int, int, int);
-const int WIN_W = 640, WIN_H = 720;
+const int WIN_W = 720, WIN_H = 720;
 
 float DeltaMillis(const struct timeval& from, const struct timeval& to) {
 	return (to.tv_sec - from.tv_sec) * 1000.0f +
@@ -140,7 +157,14 @@ void MemView::Pan(int delta) {
 	long x = long(*a) + delta;
 	if (x < 0) x = 0;
 	else if (x > ub) x = ub;
-	*a = (x / stride) * stride;
+
+	// Force align to line for consistency of the histogram? Actually not needed
+	if (false) {
+		*a = (x / stride) * stride;
+	} else {
+		*a = x;
+	}
+
 	if (IsBufferAvailable()) UpdateViewportForBuffer();
 	SetInfoAddressChangedManually();
 }
@@ -178,7 +202,7 @@ void MemView::LoadBufferFile(const char* name) {
 	long len = ftell(f);
 	rewind(f);
 	data_buffer.resize(len);
-	fread(data_buffer.data(), 1, len, f);
+	assert(len == fread(data_buffer.data(), 1, len, f));
 	fclose(f);
 	printf("Loaded buffer from file: %s, size: %ld\n", name, len);
 	UpdateViewportForBuffer();
@@ -310,6 +334,57 @@ void PerRowHistogram::LoadDummy() {
 
 int PerRowHistogram::bucket_limit = 1024 * 1024; // 1 M rows
 
+// TextureView
+TextureView::TextureView(int w, int h, int size) {
+	bytes.resize(size);
+	disp_w = w; disp_h = h;
+	left = 360; top = 24;
+	title = "Texture View";
+	bytes2pixel = new Bytes256ColorToRGB();
+	pixels.resize(bytes.size() * bytes2pixel->NumPixelDataChannels() / bytes2pixel->NumBytesPerPixel());
+}
+
+void TextureView::Render() {
+	const int PAD = 1;
+	const int x0 = left - PAD, x1 = left + disp_w + PAD, y0 = WIN_H - (top - PAD), y1 = WIN_H - (top + disp_h + PAD);
+	glBegin(GL_LINE_LOOP);
+	glColor3f(1, 1, 1);
+	glVertex2i(x0, y0); glVertex2i(x0, y1); glVertex2i(x1, y1); glVertex2i(x1, y0);
+	glEnd();
+
+	glWindowPos2i(left, WIN_H - top + 4);
+	for (char ch : title) { glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, ch); }
+
+	glWindowPos2i(left, WIN_H - top - disp_h);
+	glDrawPixels(disp_w, disp_h, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+}
+
+void TextureView::LoadDummy() {
+	for (int i=0; i<int(bytes.size()); i++) { bytes[i] = i % 0xFF; }
+	pixels = bytes;
+}
+
+void TextureView::UpdateByte(int offset, unsigned char b) {
+	if (offset >= 0 && offset < int(bytes.size())) bytes[offset] = b;
+}
+
+void TextureView::ConvertToPixels() {
+	const int step_b = bytes2pixel->NumBytesPerPixel();
+	const int step_p = bytes2pixel->NumPixelDataChannels();
+	int idx_b = 0, idx_p = 0;
+	for (;
+			 idx_b < int(bytes.size()) && idx_p < int(pixels.size());
+			 idx_b += step_b, idx_p += step_p) {
+		bytes2pixel->BytesToPixel(bytes.data() + idx_b, pixels.data() + idx_p);
+	}
+}
+
+void TextureView::EndUpdateBytes() {
+	ConvertToPixels();
+}
+
+TextureView* g_texture_view;
+
 // Helper
 struct timeval g_last_update;
 void MyDebugStartUpdatingBytes() { g_memview->StartUpdateBytes(); }
@@ -339,6 +414,22 @@ void MyDebugOnWriteByte(unsigned phys_addr, int size) {
 	g_memview->IncrementWrite(phys_addr, size);
 }
 
+void MyDebugTextureViewStartUpdatingBytes() {
+	// Do nothing for now
+}
+
+void MyDebugTextureViewUpdateByte(int offset, unsigned char b) {
+	g_texture_view->UpdateByte(offset, b);
+}
+
+void MyDebugTextureViewSetInfo(const char* x) {
+	g_texture_view->SetInfo(x);
+}
+
+void MyDebugTextureViewEndUpdatingBytes() {
+	g_texture_view->EndUpdateBytes();
+}
+
 pthread_t g_thread;
 int g_argc; char** g_argv;
 void* MyDebugInit(void* x);
@@ -347,7 +438,7 @@ void StartMyDebugThread(int argc, char** argv) {
 	g_argc = argc; g_argv = argv;
 	g_memview = new MemView(256, 512);
 	g_memview->SetInfoAddressChangedManually();
-
+	g_texture_view = new TextureView(320, 240, 320*240*3);
 	// Load file
 	// Set data source
 	if (argc > 1) {
@@ -398,6 +489,7 @@ void render() {
 	glDisable(GL_LIGHTING);
 
 	g_memview->Render();
+	g_texture_view->Render();
 
 	glWindowPos2i(0, 4);
 	glColor3f(1, 1, 1);
@@ -420,9 +512,14 @@ void keyboard(unsigned char key, int x, int y) {
 	case '-': g_memview->Zoom(-1); break; // Zoom out
 	case '=': g_memview->Zoom(1); break; // Zoom in
 #ifdef MEM_VIZ_STANDALONE
-	case 'r': g_memview->LoadDummy(); break;
-#endif
+	case 'r': {
+		g_memview->LoadDummy();
+		g_texture_view->LoadDummy();
+	}
+	break;
+#else
 	case 'r': g_memview->ClearHistograms(); break;
+#endif
 	}
 }
 
@@ -430,6 +527,10 @@ void keyboard2(int key, int x, int y) {
 	switch (key) {
 	case GLUT_KEY_PAGE_UP: g_memview->Pan(-1024); break;
 	case GLUT_KEY_PAGE_DOWN: g_memview->Pan(1024); break;
+	case GLUT_KEY_UP: g_memview->PanLines(-1); break;
+	case GLUT_KEY_DOWN: g_memview->PanLines(1); break;
+	case GLUT_KEY_LEFT: g_memview->Pan(-8); break;
+	case GLUT_KEY_RIGHT:g_memview->Pan( 8); break;
 	}
 }
 
