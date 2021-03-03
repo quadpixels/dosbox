@@ -9,6 +9,14 @@
 #include <sys/time.h>
 #include <X11/Xlib.h>
 #include <assert.h>
+#include <sstream>
+#include <iostream>
+#include <iomanip>
+
+#ifndef MEM_VIZ_STANDALONE
+extern void PauseDOSBox(bool pressed);
+extern void DEBUG_Enable(bool pressed);
+#endif
 
 // Build standalone version:
 // g++-8 mydebug.cpp -lGL -lGLEW -lglut -I. -DMEM_VIZ_STANDALONE -lpthread -lX11
@@ -16,6 +24,10 @@
 GLEW_FUN_EXPORT PFNGLWINDOWPOS2IPROC glWindowPos2i; // Keep Eclipse CDT happy
 
 // Global Variables
+
+LogView* g_logview;
+bool g_log_writes = false;
+bool g_gun_debug = true;
 
 char g_message[200];
 
@@ -412,6 +424,11 @@ void MyDebugOnReadByte(unsigned phys_addr, int size) {
 }
 void MyDebugOnWriteByte(unsigned phys_addr, int size) {
 	g_memview->IncrementWrite(phys_addr, size);
+	if (g_log_writes) {
+		std::stringstream x;
+		x << "Write " << std::to_string(size) << "B @ " << std::hex << std::setw(8) << std::setfill('0') << phys_addr;
+		g_logview->AppendEntry(x.str());
+	}
 }
 
 void MyDebugTextureViewStartUpdatingBytes() {
@@ -444,6 +461,9 @@ void StartMyDebugThread(int argc, char** argv) {
 	if (argc > 1) {
 		g_memview->LoadBufferFile(argv[1]);
 	}
+
+	g_logview = new LogView(10);
+	g_logview->AppendEntry("LogView created.");
 
 	pthread_create(&g_thread, NULL, MyDebugInit, 0);
 }
@@ -483,6 +503,7 @@ void update() {
 	glutPostRedisplay();
 }
 
+int g_frame_count = 0;
 void render() {
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	glClearColor(0.2f, 0.2f, 0.4f, 1.0f);
@@ -490,6 +511,7 @@ void render() {
 
 	g_memview->Render();
 	g_texture_view->Render();
+	g_logview->Render();
 
 	glWindowPos2i(0, 4);
 	glColor3f(1, 1, 1);
@@ -500,6 +522,7 @@ void render() {
 	}
 
 	glutSwapBuffers();
+	g_frame_count ++;
 }
 
 void keyboard(unsigned char key, int x, int y) {
@@ -511,6 +534,7 @@ void keyboard(unsigned char key, int x, int y) {
 	case ']': g_memview->PanLines( 32); break;
 	case '-': g_memview->Zoom(-1); break; // Zoom out
 	case '=': g_memview->Zoom(1); break; // Zoom in
+	case 'w': g_log_writes = !g_log_writes; break;
 #ifdef MEM_VIZ_STANDALONE
 	case 'r': {
 		g_memview->LoadDummy();
@@ -519,6 +543,8 @@ void keyboard(unsigned char key, int x, int y) {
 	break;
 #else
 	case 'r': g_memview->ClearHistograms(); break;
+	case 'p': DEBUG_Enable(true); break;
+	case 'g': g_gun_debug = !g_gun_debug; break;
 #endif
 	}
 }
@@ -561,3 +587,55 @@ int main(int argc, char** argv) {
 	pthread_join(g_thread, NULL);
 }
 #endif
+
+LogView::LogView(int capacity) {
+	entries.resize(capacity);
+	left = 360; top = 300;
+}
+
+void LogView::Render() {
+	const int LINE_HEIGHT = 12;
+	const int disp_w = 256, disp_h = LINE_HEIGHT * int(entries.size());
+	const int PAD = 1;
+	const int x0 = left - PAD, x1 = left + disp_w + PAD, y0 = WIN_H - (top - PAD), y1 = WIN_H - (top + disp_h + PAD);
+	glBegin(GL_LINE_LOOP);
+	glColor3f(1, 1, 1);
+	glVertex2i(x0, y0); glVertex2i(x0, y1); glVertex2i(x1, y1); glVertex2i(x1, y0);
+	glEnd();
+
+	for (int y=0; y<int(entries.size()); y++) {
+		glWindowPos2i(left, WIN_H - top - LINE_HEIGHT * (1+y) + 2);
+		const std::string& entry = entries[(idx+y) % int(entries.size())];
+		for (char ch : entry) { glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, ch); }
+	}
+}
+
+void LogView::AppendEntry(const std::string& line) {
+	entries[idx] = line;
+	idx = (idx + 1) % (int(entries.size()));
+}
+
+// from debug.cpp, on my current system
+typedef unsigned short Bit16u;
+typedef unsigned int   Bit32u;
+typedef unsigned int   PhysPt;
+extern Bit32u GetAddress(Bit16u seg, Bit32u offset);
+extern Bit32u mem_readd(PhysPt address);
+
+void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
+	// GUN DBG
+	char buf[111];
+	if (seg_cs == 0x0160 && ip == 0x283d17) {
+		int dw0 = mem_readd(GetAddress(0x0160, 0x5214a0));
+		int dw1 = mem_readd(GetAddress(0x0160, 0x5214a4));
+		int dw2 = mem_readd(GetAddress(0x0160, 0x5214a8));
+		int dw3 = mem_readd(GetAddress(0x0160, 0x5214ac));
+		// Suspect: viewport
+		// Typical valus: [1,-144,144,-62], single player, 90% view
+		//                [1,-160,160,-62], single player, 100% view
+		//                [1,-124,124,-48], multiplayer
+		sprintf(buf, "%04X:%08X, 0x5214a0:[%d,%d,%d,%d]", seg_cs, ip, cs,
+		  dw0, dw1, dw2, dw3);
+		g_logview->AppendEntry(buf);
+	}
+}

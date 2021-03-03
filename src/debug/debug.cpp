@@ -60,6 +60,7 @@ static struct termios consolesettings;
 int old_cursor_state;
 
 #include "../mydebug.h"
+extern bool g_gun_debug;
 #include <string.h>
 
 // Forwards
@@ -2553,6 +2554,12 @@ void DEBUG_HeavyWriteLogInstruction(void) {
 
 bool DEBUG_HeavyIsBreakpoint(void) {
 	static Bitu zero_count = 0;
+
+	// Log My Stuff
+	if (g_gun_debug) {
+		MyDebugOnInstructionEntered(cs, SegValue(cs), reg_eip);
+	}
+
 	if (cpuLog) {
 		if (cpuLogCounter>0) {
 			LogInstruction(SegValue(cs),reg_eip,cpuLogFile);

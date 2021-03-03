@@ -147,6 +147,14 @@ struct TextureView : public MyView {
 	void SetInfo(const char* x) { title = std::string(x); }
 };
 
+struct LogView : public MyView {
+	int idx, top, left;
+	std::vector<std::string> entries;
+	LogView(int capacity);
+	void Render() override;
+	void AppendEntry(const std::string& line);
+};
+
 // For usage from DosBox
 void StartMyDebugThread(int argc, char** argv); // Launches visualizer window
 void MyDebugStartUpdatingBytes();               // Start update bytes for view window
@@ -162,5 +170,8 @@ void MyDebugTextureViewStartUpdatingBytes();
 void MyDebugTextureViewUpdateByte(int, unsigned char); // Updates one byte in the texture viewer
 void MyDebugTextureViewEndUpdatingBytes();
 void MyDebugTextureViewSetInfo(const char* x);
+
+void MyDebugLogViewAppendEntry(const std::string& line);
+void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip);
 
 #endif
