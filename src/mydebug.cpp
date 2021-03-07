@@ -162,6 +162,12 @@ void MemView::Render() {
 	histogram_read ->Render(left + disp_w + 2 * MARGIN + histogram_w, top, histogram_w, disp_h, bucket_idx, bucket_per_line, 0);
 }
 
+void MemView::SetAddress(int addr) {
+	view_window.address = addr;
+	if (IsBufferAvailable()) UpdateViewportForBuffer();
+	SetInfoAddressChangedManually();
+}
+
 void MemView::Pan(int delta) {
 	const unsigned stride = GetLineStride();
 	unsigned int* a = &(view_window.address);
@@ -462,7 +468,7 @@ void StartMyDebugThread(int argc, char** argv) {
 		g_memview->LoadBufferFile(argv[1]);
 	}
 
-	g_logview = new LogView(10);
+	g_logview = new LogView(30);
 	g_logview->AppendEntry("LogView created.");
 
 	pthread_create(&g_thread, NULL, MyDebugInit, 0);
@@ -506,7 +512,7 @@ void update() {
 int g_frame_count = 0;
 void render() {
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	glClearColor(0.2f, 0.2f, 0.4f, 1.0f);
+	glClearColor(0.15f, 0.15f, 0.15f, 1.0f);
 	glDisable(GL_LIGHTING);
 
 	g_memview->Render();
@@ -542,8 +548,16 @@ void keyboard(unsigned char key, int x, int y) {
 	}
 	break;
 #else
-	case 'r': g_memview->ClearHistograms(); break;
-	case 'p': DEBUG_Enable(true); break;
+	case 'r': {
+		g_logview->Clear();
+		g_memview->ClearHistograms();
+		break;
+	}
+	case 'p': { // Gun-specific debug settings.
+		DEBUG_Enable(true);
+		g_memview->SetAddress(0x8394f0);
+		break;
+	}
 	case 'g': g_gun_debug = !g_gun_debug; break;
 #endif
 	}
@@ -595,7 +609,7 @@ LogView::LogView(int capacity) {
 
 void LogView::Render() {
 	const int LINE_HEIGHT = 12;
-	const int disp_w = 256, disp_h = LINE_HEIGHT * int(entries.size());
+	const int disp_w = 320, disp_h = LINE_HEIGHT * int(entries.size());
 	const int PAD = 1;
 	const int x0 = left - PAD, x1 = left + disp_w + PAD, y0 = WIN_H - (top - PAD), y1 = WIN_H - (top + disp_h + PAD);
 	glBegin(GL_LINE_LOOP);
@@ -615,12 +629,17 @@ void LogView::AppendEntry(const std::string& line) {
 	idx = (idx + 1) % (int(entries.size()));
 }
 
+void LogView::Clear() {
+	for (int i=0; i<int(entries.size()); i++) { entries[i].clear(); }
+}
+
 // from debug.cpp, on my current system
 typedef unsigned short Bit16u;
 typedef unsigned int   Bit32u;
 typedef unsigned int   PhysPt;
 extern Bit32u GetAddress(Bit16u seg, Bit32u offset);
 extern Bit32u mem_readd(PhysPt address);
+extern unsigned Get32BitRegister(const std::string& name);
 
 void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
 	// GUN DBG
@@ -630,12 +649,51 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
 		int dw1 = mem_readd(GetAddress(0x0160, 0x5214a4));
 		int dw2 = mem_readd(GetAddress(0x0160, 0x5214a8));
 		int dw3 = mem_readd(GetAddress(0x0160, 0x5214ac));
+		int dw4 = mem_readd(GetAddress(0x0160, 0x52149c));
 		// Suspect: viewport
 		// Typical valus: [1,-144,144,-62], single player, 90% view
 		//                [1,-160,160,-62], single player, 100% view
 		//                [1,-124,124,-48], multiplayer
-		sprintf(buf, "%04X:%08X, 0x5214a0:[%d,%d,%d,%d]", seg_cs, ip, cs,
-		  dw0, dw1, dw2, dw3);
+		sprintf(buf, "%04X:%08X, 0x5214a0:[%d,%d,%d,%d], ustack56=%X", seg_cs, ip, cs,
+		  dw0, dw1, dw2, dw3, dw4);
 		g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == 0x283dc0) {
+		int dw5 = mem_readd(GetAddress(0x0160, 0x490eac));
+		sprintf(buf, "[490eac]=%d", dw5);
+		g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == 0x283e05) {
+		unsigned ecx = Get32BitRegister("ecx");
+		sprintf(buf, " *piStack224=%u", ecx);
+		//g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == 0x283e63) {
+		unsigned eax = Get32BitRegister("eax");
+		sprintf(buf, " *(istack192+0x6a)=%u", eax);
+		//g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == 0x283fbe) {
+		unsigned ecx = Get32BitRegister("ecx");
+		sprintf(buf, " istack172=%u", ecx);
+		//g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == 0x283dec) { // Level 1 descriptors
+		unsigned edx = Get32BitRegister("edx");
+		sprintf(buf, " piStack224=%08x; *piStack224=[%d,%d]",
+		  edx, mem_readd(GetAddress(0x0160, edx)), mem_readd(GetAddress(0x0160, edx+4)));
+		g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == 0x283e27) { // Level 2 descriptors
+		unsigned eax = Get32BitRegister("eax");
+		sprintf(buf, " (piStack224[1] + iStack216)=%08X", eax); g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == 0x284384) {
+		unsigned eax = Get32BitRegister("eax");
+		sprintf(buf, " iStack152=%d", eax); g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == 0x283e29) {
+		unsigned eax = Get32BitRegister("eax");
+		unsigned count = 0xFFFF & mem_readd(GetAddress(0x0168, eax+0x6a)); // DS = 0x0168
+		sprintf(buf, " istack192=%08X; *[6a]=%u", eax, count); g_logview->AppendEntry(buf);
+		unsigned istack148_lb = mem_readd(GetAddress(0x0168, eax+0x6c));
+		sprintf(buf, " Level 3 descriptor should start at %08X:", istack148_lb); g_logview->AppendEntry(buf);
+		for (int i=0; i<std::min(100U, count); i++) {
+			unsigned istack148 = istack148_lb + i * 0x80;
+			unsigned dword71 = mem_readd(GetAddress(0x0168, istack148));
+			sprintf(buf, "  [%d] @ %08X, [71]=%d", i, istack148, (0xFF & dword71)); g_logview->AppendEntry(buf);
+		}
 	}
 }

@@ -137,7 +137,16 @@ static void Draw_RegisterLayout(void) {
 	mvwaddstr(dbg.win_reg,2,75,"CPL");
 	mvwaddstr(dbg.win_reg,2,68,"IOPL");
 
+	const int y0 = 0, y1 = 35;
 	mvwaddstr(dbg.win_reg,1,52,"C  Z  S  O  A  P  D  I  T ");
+	mvwaddstr(dbg.win_reg,4,y0, "ST0=");
+	mvwaddstr(dbg.win_reg,4,y1, "ST4=");
+	mvwaddstr(dbg.win_reg,5,y0, "ST1=");
+	mvwaddstr(dbg.win_reg,5,y1, "ST5=");
+	mvwaddstr(dbg.win_reg,6,y0, "ST2=");
+	mvwaddstr(dbg.win_reg,6,y1, "ST6=");
+	mvwaddstr(dbg.win_reg,7,y0, "ST3=");
+	mvwaddstr(dbg.win_reg,7,y1, "ST7=");
 }
 
 
@@ -148,13 +157,13 @@ static void DrawBars(void) {
 	/* Show the Register bar */
 	mvaddstr(1-1,0, "-----(Register Overview                   )-----                                ");
 	/* Show the Data Overview bar perhaps with more special stuff in the end */
-	mvaddstr(6-1,0, "-----(Data Overview   Scroll: page up/down)-----                                ");
+	mvaddstr(10-1,0, "-----(Data Overview   Scroll: page up/down)-----                                ");
 	/* Show the Code Overview perhaps with special stuff in bar too */  
-	mvaddstr(15-1,0,"-----(Code Overview   Scroll: up/down     )-----                                ");
+	mvaddstr(19-1,0,"-----(Code Overview   Scroll: up/down     )-----                                ");
 	/* Show the Variable Overview bar */
-	mvaddstr(27-1,0,"-----(Variable Overview                   )-----                                ");
+	mvaddstr(31-1,0,"-----(Variable Overview                   )-----                                ");
 	/* Show the Output OverView */
-	mvaddstr(32-1,0,"-----(Output          Scroll: home/end    )-----                                ");
+	mvaddstr(36-1,0,"-----(Output          Scroll: home/end    )-----                                ");
 	attrset(0);
 	//Match values with below. So we don't need to touch the internal window structures
 }
@@ -167,17 +176,17 @@ static void MakeSubWindows(void) {
 	int win_main_maxy, win_main_maxx; getmaxyx(dbg.win_main,win_main_maxy,win_main_maxx);
 	int outy=1; //Match values with above
 	/* The Register window  */
-	dbg.win_reg=subwin(dbg.win_main,4,win_main_maxx,outy,0);
-	outy+=5; // 6
+	dbg.win_reg=subwin(dbg.win_main,8,win_main_maxx,outy,0);
+	outy+=9; // 10
 	/* The Data Window */
 	dbg.win_data=subwin(dbg.win_main,8,win_main_maxx,outy,0);
-	outy+=9; // 15
+	outy+=9; // 19
 	/* The Code Window */
 	dbg.win_code=subwin(dbg.win_main,11,win_main_maxx,outy,0);
-	outy+=12; // 27
+	outy+=12; // 31
 	/* The Variable Window */
 	dbg.win_var=subwin(dbg.win_main,4,win_main_maxx,outy,0);
-	outy+=5; // 32
+	outy+=5; // 36
 	/* The Output Window */	
 	dbg.win_out=subwin(dbg.win_main,win_main_maxy-outy,win_main_maxx,outy,0);
 	if(!dbg.win_reg ||!dbg.win_data || !dbg.win_code || !dbg.win_var || !dbg.win_out) E_Exit("Setting up windows failed");

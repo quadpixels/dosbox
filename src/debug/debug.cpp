@@ -49,6 +49,7 @@ using namespace std;
 #include "../cpu/lazyflags.h"
 #include "keyboard.h"
 #include "setup.h"
+#include "fpu.h"
 
 #ifdef WIN32
 void WIN32_Console();
@@ -119,6 +120,7 @@ bool	logHeavy	= false;
 
 static struct  {
 	Bit32u eax,ebx,ecx,edx,esi,edi,ebp,esp,eip;
+	double st0,st1,st2,st3,st4,st5,st6,st7;
 } oldregs;
 
 static char curSelectorName[3] = { 0,0,0 };
@@ -745,6 +747,22 @@ static void DrawRegisters(void) {
 	SetColor(reg_ebp!=oldregs.ebp);oldregs.ebp=reg_ebp;mvwprintw (dbg.win_reg,2,18,"%08X",reg_ebp);
 	SetColor(reg_esp!=oldregs.esp);oldregs.esp=reg_esp;mvwprintw (dbg.win_reg,3,18,"%08X",reg_esp);
 	SetColor(reg_eip!=oldregs.eip);oldregs.eip=reg_eip;mvwprintw (dbg.win_reg,1,42,"%08X",reg_eip);
+
+	SetColor(0);
+	double* old_sts[] = { &oldregs.st0, &oldregs.st1, &oldregs.st2, &oldregs.st3, 
+	                      &oldregs.st4, &oldregs.st5, &oldregs.st6, &oldregs.st7 };
+  const int ys[] = { 4, 4,  5,  5, 6,  6, 7,  7 };
+	const int xs[] = { 4, 39, 4, 39, 4, 39, 4, 39 };
+	const int idxes[] = { 0,4,1,5,2,6,3,7 };
+	for (int i=0; i<8; i++) {
+		const int idx = idxes[i];
+		double d = fpu.regs[STV(idx)].d;
+		SetColor(d != *(old_sts[idx]));
+		*(old_sts[i]) = d;
+		unsigned long long ulld = *(unsigned long long*)(&fpu.regs[STV(i)].d);
+		mvwprintw(dbg.win_reg, ys[i], xs[i], "%*c", 31, ' ');
+		mvwprintw(dbg.win_reg, ys[i], xs[i], "%016X %7g", ulld, d);
+	}
 	
 	SetColor(SegValue(ds)!=oldsegs[ds].val);oldsegs[ds].val=SegValue(ds);mvwprintw (dbg.win_reg,0,31,"%04X",SegValue(ds));
 	SetColor(SegValue(es)!=oldsegs[es].val);oldsegs[es].val=SegValue(es);mvwprintw (dbg.win_reg,0,41,"%04X",SegValue(es));
@@ -2088,7 +2106,7 @@ static void LogInstruction(Bit16u segValue, Bit32u eipValue,  ofstream& out) {
 		if (len<21) { for (Bitu i=0; i<21-len; i++) ibytes[len + i] =' '; ibytes[21]=0;} //NOTE THE BRACKETS
 		out << setw(4) << SegValue(cs) << ":" << setw(8) << reg_eip << "  " << dline << "  " << res << "  " << ibytes;
 	}
-   
+
 	out << " EAX:" << setw(8) << reg_eax << " EBX:" << setw(8) << reg_ebx 
 	    << " ECX:" << setw(8) << reg_ecx << " EDX:" << setw(8) << reg_edx
 	    << " ESI:" << setw(8) << reg_esi << " EDI:" << setw(8) << reg_edi 
@@ -2107,7 +2125,7 @@ static void LogInstruction(Bit16u segValue, Bit32u eipValue,  ofstream& out) {
 	}
 	if(cpuLogType == 2) {
 		out << " TF:" << GETFLAGBOOL(TF) << " VM:" << GETFLAGBOOL(VM) <<" FLG:" << setw(8) << reg_flags 
-		    << " CR0:" << setw(8) << cpu.cr0;	
+		    << " CR0:" << setw(8) << cpu.cr0;
 	}
 	out << endl;
 };
@@ -2596,6 +2614,13 @@ bool DEBUG_HeavyIsBreakpoint(void) {
 }
 
 #endif // HEAVY DEBUG
+
+unsigned Get32BitRegister(const std::string& name) {
+	if (name == "ecx") return reg_ecx;
+	else if (name == "eax") return reg_eax;
+	else if (name == "edx") return reg_edx;
+	return 0;
+}
 
 void DebugToMyDebugViz() {
 	const int step = MyDebugViewWindow()->step;

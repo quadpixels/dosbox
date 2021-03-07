@@ -77,6 +77,7 @@ struct MemView : public MyView {
 	void Pan(int delta); // Pan how many bytes
 	void PanLines(int line_delta);
 	void Zoom(int zoom_factor);
+	void SetAddress(int addr);
 	unsigned GetAddressByPosition(int left, int top);
 
 	// Display properties
@@ -153,6 +154,7 @@ struct LogView : public MyView {
 	LogView(int capacity);
 	void Render() override;
 	void AppendEntry(const std::string& line);
+	void Clear();
 };
 
 // For usage from DosBox
