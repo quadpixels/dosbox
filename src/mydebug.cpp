@@ -19,15 +19,24 @@ extern void DEBUG_Enable(bool pressed);
 #endif
 
 // Build standalone version:
-// g++-8 mydebug.cpp -lGL -lGLEW -lglut -I. -DMEM_VIZ_STANDALONE -lpthread -lX11
+// g++-8 mydebug.cpp -lGL -lGLEW -lglut -I. -DMEM_VIZ_STANDALONE -lpthread -lX11 -lGLU
 
 GLEW_FUN_EXPORT PFNGLWINDOWPOS2IPROC glWindowPos2i; // Keep Eclipse CDT happy
 
 // Global Variables
 
+PointCloudView* g_pointcloudview;
 LogView* g_logview;
 bool g_log_writes = false;
 bool g_gun_debug = true;
+GLfloat g_projection_matrix[16];
+void PrintMatrix(const char* title, GLfloat* x) {
+	printf("[Print matrix] %s\n", title);
+	printf("%2.3f %2.3f %2.3f %2.3f\n", x[0], x[4], x[8], x[12]);
+	printf("%2.3f %2.3f %2.3f %2.3f\n", x[1], x[5], x[9], x[13]);
+	printf("%2.3f %2.3f %2.3f %2.3f\n", x[2], x[6], x[10],x[14]);
+	printf("%2.3f %2.3f %2.3f %2.3f\n", x[3], x[7], x[11],x[15]);
+}
 
 char g_message[200];
 
@@ -74,7 +83,7 @@ void keyboard2(int, int, int);
 void motion(int x, int y);
 void motion_passive(int x, int y);
 void mouse(int, int, int, int);
-const int WIN_W = 720, WIN_H = 720;
+const int WIN_W = 1080, WIN_H = 720;
 
 float DeltaMillis(const struct timeval& from, const struct timeval& to) {
 	return (to.tv_sec - from.tv_sec) * 1000.0f +
@@ -468,8 +477,13 @@ void StartMyDebugThread(int argc, char** argv) {
 		g_memview->LoadBufferFile(argv[1]);
 	}
 
-	g_logview = new LogView(30);
+	g_logview = new LogView(50);
 	g_logview->AppendEntry("LogView created.");
+	g_pointcloudview = new PointCloudView();
+	g_pointcloudview->x = 360;
+	g_pointcloudview->y = 360;
+	g_pointcloudview->w = 300;
+	g_pointcloudview->h = 300;
 
 	pthread_create(&g_thread, NULL, MyDebugInit, 0);
 }
@@ -490,6 +504,11 @@ void* MyDebugInit(void* x) {
 	XInitThreads();
 	glOrtho(0, WIN_W, 0, WIN_H, 0, 1); // Use windowPos coordinate system
 
+	int major_version, minor_version;
+	glGetIntegerv(GL_MAJOR_VERSION, &major_version);
+	glGetIntegerv(GL_MINOR_VERSION, &minor_version);
+	printf("GL_MAJOR_VERSION=%d, GL_MINOR_VERSION=%d\n", major_version, minor_version);
+	printf("GL_VERSION=%s\n", glGetString(GL_VERSION));
 #ifdef MEM_VIZ_STANDALONE
 #endif
 
@@ -518,6 +537,7 @@ void render() {
 	g_memview->Render();
 	g_texture_view->Render();
 	g_logview->Render();
+	g_pointcloudview->Render();
 
 	glWindowPos2i(0, 4);
 	glColor3f(1, 1, 1);
@@ -604,7 +624,7 @@ int main(int argc, char** argv) {
 
 LogView::LogView(int capacity) {
 	entries.resize(capacity);
-	left = 360; top = 300;
+	left = 720; top = 20;
 }
 
 void LogView::Render() {
@@ -637,9 +657,15 @@ void LogView::Clear() {
 typedef unsigned short Bit16u;
 typedef unsigned int   Bit32u;
 typedef unsigned int   PhysPt;
+#ifndef MEM_VIZ_STANDALONE
 extern Bit32u GetAddress(Bit16u seg, Bit32u offset);
 extern Bit32u mem_readd(PhysPt address);
 extern unsigned Get32BitRegister(const std::string& name);
+#else // Dummy for standalone version
+Bit32u GetAddress(Bit16u seg, Bit32u offset) { return 0; }
+Bit32u mem_readd(PhysPt address) { return 0; }
+unsigned Get32BitRegister(const std::string& name) { return 0; }
+#endif
 
 void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
 	// GUN DBG
@@ -696,4 +722,56 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
 			sprintf(buf, "  [%d] @ %08X, [71]=%d", i, istack148, (0xFF & dword71)); g_logview->AppendEntry(buf);
 		}
 	}
+}
+
+void PointCloudView::Render() {
+	const int PAD = 1;
+	const int x0 = x - PAD, x1 = x + w + PAD, y0 = WIN_H - (y - PAD), y1 = WIN_H - (y + h + PAD);
+	glBegin(GL_LINE_LOOP);
+	glColor3f(1, 1, 1);
+	glVertex2i(x0, y0); glVertex2i(x0, y1); glVertex2i(x1, y1); glVertex2i(x1, y0);
+	glEnd();
+
+	// Default:
+	// [ 1 0 0 0 ]
+	// [ 0 1 0 0 ]
+	// [ 0 0 1 0 ]
+	// [ 0 0 0 1 ]
+	if (g_frame_count <= 10) {
+		glGetFloatv(GL_PROJECTION_MATRIX, g_projection_matrix);
+		//PrintMatrix("projection matrix", g_projection_matrix);
+	}
+
+	glMatrixMode(GL_PROJECTION);
+	glViewport(x, WIN_H-y-h, w, h);
+	glLoadIdentity();
+	gluPerspective(60, w*1.0f/h, 0.1, 100);
+	GLenum e = glGetError();
+	if (e != 0) {
+		printf("GL error: %d\n", e);
+	}
+	
+	const float rot_x = g_frame_count * 0.5f, rot_y = g_frame_count * 0.2f;
+	glMatrixMode(GL_MODELVIEW);
+	glPushMatrix();
+	glLoadIdentity();
+	glTranslatef(0, 0, -40);
+	glRotatef(rot_x, 1, 0, 0);
+	glRotatef(rot_y, 0, 1, 0);
+	const float r = 11.0f;
+	const float xs[] = { -r,-r,-r,-r, r, r, r, r },
+	            ys[] = { -r,-r, r, r,-r,-r, r, r },
+	            zs[] = { -r, r,-r, r,-r, r,-r, r };
+	glPointSize(3);
+	glBegin(GL_POINTS);
+	for (int i=0; i<8; i++) { glVertex3f(xs[i], ys[i], zs[i]); }
+	glEnd();
+	glutWireCube(r);
+	glPointSize(1);
+	glPopMatrix();
+
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+	glOrtho(-1, 1, -1, 1, -1, 1);
+	glViewport(0, 0, WIN_W, WIN_H);
 }

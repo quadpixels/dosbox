@@ -176,4 +176,9 @@ void MyDebugTextureViewSetInfo(const char* x);
 void MyDebugLogViewAppendEntry(const std::string& line);
 void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip);
 
+struct PointCloudView : public MyView {
+	int x, y, w, h;
+	void Render() override;
+};
+
 #endif
