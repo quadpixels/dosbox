@@ -176,7 +176,16 @@ void MyDebugTextureViewEndUpdatingBytes();
 void MyDebugTextureViewSetInfo(const char* x);
 
 void MyDebugLogViewAppendEntry(const std::string& line);
-void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip);
+void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int* status);
+
+struct Camera {
+	glm::mat3 orientation;
+	glm::vec3 pos;
+	Camera() : orientation(glm::mat3(1)) {}
+	void RotateAlongLocalAxis(const glm::vec3& axis, const float radians);
+	void MoveAlongLocalAxis(const glm::vec3& delta_pos);
+	void Apply();
+};
 
 struct PointCloudView : public MyView {
 	int x, y, w, h;
@@ -184,6 +193,7 @@ struct PointCloudView : public MyView {
 	int num_verts;
 	std::vector<std::vector<glm::vec3> > polygons;
 	std::vector<glm::vec3> curr_polygon;
+	Camera camera;
 
 	bool should_clear;
 	bool should_append;

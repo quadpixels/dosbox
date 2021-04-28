@@ -2575,7 +2575,12 @@ bool DEBUG_HeavyIsBreakpoint(void) {
 
 	// Log My Stuff
 	if (g_gun_debug) {
-		MyDebugOnInstructionEntered(cs, SegValue(cs), reg_eip);
+		int status = 0;
+		MyDebugOnInstructionEntered(cs, SegValue(cs), reg_eip, &status);
+		if (status == 1) {
+			// Set EBX to non-zero, for instruction at 0x283e85 (test ebx, ebx)
+			reg_ebx = 1;
+		}
 	}
 
 	if (cpuLog) {

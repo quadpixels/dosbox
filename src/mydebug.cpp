@@ -12,7 +12,7 @@
 #include <sstream>
 #include <iostream>
 #include <iomanip>
-
+#include <bitset>
 
 #ifndef MEM_VIZ_STANDALONE
 #include "cpu.h"
@@ -31,6 +31,8 @@ PointCloudView* g_pointcloudview;
 LogView* g_logview;
 bool g_log_writes = false;
 bool g_gun_debug = true;
+bool g_gun_reveal_minimap = true;
+bool g_is_shift = false;
 GLfloat g_projection_matrix[16];
 void PrintMatrix(const char* title, GLfloat* x) {
 	printf("[Print matrix] %s\n", title);
@@ -81,7 +83,9 @@ public:
 void render();
 void update();
 void keyboard(unsigned char, int, int);
+void keyboardUp(unsigned char, int, int);
 void keyboard2(int, int, int);
+void keyboard2Up(int, int, int);
 void motion(int x, int y);
 void motion_passive(int x, int y);
 void mouse(int, int, int, int);
@@ -112,7 +116,7 @@ struct MouseWheelAccum {
 };
 float MouseWheelAccum::diff = 50.0f;
 MouseWheelAccum g_mousewheel_accum;
-
+std::bitset<11> g_flags;
 unsigned ViewWindow::max_step = 64;
 unsigned ViewWindow::min_step = 1;
 
@@ -504,7 +508,9 @@ void* MyDebugInit(void* x) {
 	glutDisplayFunc(render);
 	glutIdleFunc(update);
 	glutKeyboardFunc(keyboard); // This will not work with Dosbox due to multithreading problems
+	glutKeyboardUpFunc(keyboardUp);
 	glutSpecialFunc(keyboard2);
+	glutSpecialUpFunc(keyboard2Up);
 	glutMouseFunc(mouse);
 	glutMotionFunc(motion);
 	glutPassiveMotionFunc(motion_passive);
@@ -531,6 +537,21 @@ void update() {
 	// Pop
 	const int l = g_mousewheel_accum.PopLines();
 	if (l != 0) g_memview->PanLines(l);
+
+	// Move camera
+	if (g_pointcloudview) {
+		Camera* camera = &(g_pointcloudview->camera);
+		const float linspeed = 1, rotspeed = 0.012;
+		
+		if (g_flags.test(0)) { camera->MoveAlongLocalAxis(glm::vec3(0, 0, -linspeed)); }
+		if (g_flags.test(1)) { camera->MoveAlongLocalAxis(glm::vec3(0, 0,  linspeed)); }
+		if (g_flags.test(2)) { camera->MoveAlongLocalAxis(glm::vec3(-linspeed, 0, 0)); }
+		if (g_flags.test(3)) { camera->MoveAlongLocalAxis(glm::vec3( linspeed, 0, 0)); }
+		if (g_flags.test(4)) { camera->RotateAlongLocalAxis(glm::vec3(-1,  0, 0), rotspeed); }
+		if (g_flags.test(5)) { camera->RotateAlongLocalAxis(glm::vec3( 1,  0, 0), rotspeed); }
+		if (g_flags.test(6)) { camera->RotateAlongLocalAxis(glm::vec3( 0,  1, 0), rotspeed); }
+		if (g_flags.test(7)) { camera->RotateAlongLocalAxis(glm::vec3( 0, -1, 0), rotspeed); }
+	}
 
 	glutPostRedisplay();
 }
@@ -559,6 +580,7 @@ void render() {
 }
 
 void keyboard(unsigned char key, int x, int y) {
+	bool is_shift = glutGetModifiers() & GLUT_ACTIVE_SHIFT;
 	switch (key) {
 #ifdef MEM_VIZ_STANDALONE
 	case 27: exit(0); break;
@@ -590,18 +612,42 @@ void keyboard(unsigned char key, int x, int y) {
 	}
 	case 'g': g_gun_debug = !g_gun_debug; break;
 #endif
+	case 'i': g_flags.set(0); break;
+	case 'k': g_flags.set(1); break;
+	case 'j': g_flags.set(2); break;
+	case 'l': g_flags.set(3); break;
+	case 'I': g_flags.set(4); break;
+	case 'K': g_flags.set(5); break;
+	case 'J': g_flags.set(6); break;
+	case 'L': g_flags.set(7); break;
+	}
+}
+
+void keyboardUp(unsigned char key, int x, int y) {
+	switch (key) {
+		case 'i': g_flags.reset(0); break;
+		case 'k': g_flags.reset(1); break;
+		case 'j': g_flags.reset(2); break;
+		case 'l': g_flags.reset(3); break;
+		case 'I': g_flags.reset(4); break;
+		case 'K': g_flags.reset(5); break;
+		case 'J': g_flags.reset(6); break;
+		case 'L': g_flags.reset(7); break;
 	}
 }
 
 void keyboard2(int key, int x, int y) {
 	switch (key) {
-	case GLUT_KEY_PAGE_UP: g_memview->Pan(-1024); break;
-	case GLUT_KEY_PAGE_DOWN: g_memview->Pan(1024); break;
-	case GLUT_KEY_UP: g_memview->PanLines(-1); break;
-	case GLUT_KEY_DOWN: g_memview->PanLines(1); break;
-	case GLUT_KEY_LEFT: g_memview->Pan(-8); break;
-	case GLUT_KEY_RIGHT:g_memview->Pan( 8); break;
+		case GLUT_KEY_PAGE_UP: g_memview->Pan(-1024); break;
+		case GLUT_KEY_PAGE_DOWN: g_memview->Pan(1024); break;
+		case GLUT_KEY_UP: g_memview->PanLines(-1); break;
+		case GLUT_KEY_DOWN: g_memview->PanLines(1); break;
+		case GLUT_KEY_LEFT: g_memview->Pan(-8); break;
+		case GLUT_KEY_RIGHT:g_memview->Pan( 8); break;
 	}
+}
+
+void keyboard2Up(int key, int x, int y) {
 }
 
 // Accumulate
@@ -688,7 +734,7 @@ Bit64u MyReadQ(PhysPt address) { return 0; }
 unsigned Get32BitRegister(const std::string& name) { return 0; }
 #endif
 
-void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
+void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int* status) {
 	// GUN DBG
 	char buf[111];
 	if (seg_cs == 0x0160 && ip == 0x283c90) {
@@ -728,6 +774,11 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
 		unsigned eax = Get32BitRegister("eax");
 		sprintf(buf, " *(istack192+0x6a)=%u", eax);
 		//g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == 0x283e7e) {
+		if (g_gun_reveal_minimap) {
+			g_logview->AppendEntry("Attempting to reveal");
+			*status = 1;
+		}
 	} else if (seg_cs == 0x0160 && ip == 0x283ec3) {
 		g_pointcloudview->BeginNewPolygon();
 	} else if (seg_cs == 0x0160 && ip == 0x283fbe) {
@@ -742,7 +793,7 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
 	} else if (seg_cs == 0x0160 && ip == 0x283e27) { // Level 2 descriptors
 		unsigned eax = Get32BitRegister("eax");
 		sprintf(buf, " (piStack224[1] + iStack216)=%08X", eax); g_logview->AppendEntry(buf);
-	} else if (seg_cs == 0x0160 && ip == 0x284384) {
+	} else if (seg_cs == 0x0160 && ip == 0x28437d) {
 		unsigned eax = Get32BitRegister("eax");
 		sprintf(buf, " iStack152=%d", eax); g_logview->AppendEntry(buf);
 	} else if (seg_cs == 0x0160 && ip == 0x283e29) {
@@ -794,6 +845,64 @@ PointCloudView::PointCloudView() {
 	should_append = true;
 }
 
+void Camera::Apply() {
+	// M is column-major
+	//
+	// glm::mat3 is a set of 3 glm::vec3's, each vec3 is a column in the mat3,
+	// so the first subscript to glm::mat3 is column index
+	// & the second subscript to glm::mat3 is row index
+	//
+	// So if we write the desired MV matrix in textbook form:
+	//
+	// M[0]  M[4]  M[8]  M[12]
+	// M[1]  M[5]  M[9]  M[13]
+	// M[2]  M[6]  M[10] M[14]
+	// M[3]  M[7]  M[11] M[15]
+	//
+	// Which is equivalent to
+	//
+	// o[0][0]  o[1][0]  o[2][0]  pos.x
+	// o[0][1]  o[1][1]  o[2][1]  pos.y
+	// o[0][2]  o[1][2]  o[2][2]  pos.z
+	// 0        0        0        1
+	//
+	float M[16];
+	const glm::mat3& o = orientation;
+	M[0] = o[0].x;
+	M[1] = o[0].y;
+	M[2] = o[0].z;
+	M[3] = 0;
+	M[4] = o[1].x;
+	M[5] = o[1].y;
+	M[6] = o[1].z;
+	M[7] = 0;
+	M[8] = o[2].x;
+	M[9] = o[2].y;
+	M[10] = o[2].z;
+	M[11] = 0;
+	M[12] = pos.x;
+	M[13] = pos.y;
+	M[14] = pos.z;
+	M[15] = 1;
+
+	glMatrixMode(GL_MODELVIEW);
+	glLoadMatrixf(M);
+}
+
+void Camera::RotateAlongLocalAxis(const glm::vec3& axis, const float radians) {
+	const float c = cosf(radians), s = sinf(radians);
+	const float ux = axis.x, uy = axis.y, uz = axis.z;
+	glm::mat3 r;
+	r[0][0] = c+ux*ux*(1-c);    r[1][0] = ux*uy*(1-c)-uz*s; r[2][0] = ux*uz*(1-c)+uy*s;
+	r[0][1] = uy*ux*(1-c)+uz*s; r[1][1] = c + uy*uy*(1-c);  r[2][1] = uy*uz*(1-c)-ux*s;
+	r[0][2] = uz*ux*(1-c)-uy*s; r[1][2] = uz*uy*(1-c)+ux*s; r[2][2] = c+uz*uz*(1-c);
+	orientation *= r;
+}
+
+void Camera::MoveAlongLocalAxis(const glm::vec3& delta_pos) {
+	pos += orientation * delta_pos;
+}
+
 void PointCloudView::Render() {
 	const int PAD = 1;
 	const int x0 = x - PAD, x1 = x + w + PAD, y0 = WIN_H - (y - PAD), y1 = WIN_H - (y + h + PAD);
@@ -829,9 +938,11 @@ void PointCloudView::Render() {
 	glm::vec3 extent = bb_ub - bb_lb;
 	float delta_z = 10+sqrtf(glm::dot(extent, extent));
 
-	glTranslatef(0, 0, -delta_z);
-	glRotatef(rot_x, 1, 0, 0);
-	glRotatef(rot_y, 0, 1, 0);
+	camera.pos.z = -delta_z;
+	camera.Apply();
+
+	//glRotatef(rot_x, 1, 0, 0);
+	//glRotatef(rot_y, 0, 1, 0);
 	
 	glPointSize(3);
 	glBegin(GL_POINTS);
@@ -875,9 +986,9 @@ void PointCloudView::Render() {
 	glViewport(0, 0, WIN_W, WIN_H);
 	char tmp[200];
 	
-	sprintf(tmp, "%d verts, %d polys, center:(%.2f, %.2f, %.2f), delta_z=%.2f, bb:(%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f", 
+	sprintf(tmp, "%d verts, %d polys, center:(%.2f, %.2f, %.2f) bb:(%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f", 
 		int(num_verts), GetPolyCount(),
-		center.x, center.y, center.z, delta_z,
+		center.x, center.y, center.z,
 		bb_lb.x, bb_lb.y, bb_lb.z,
 		bb_ub.x, bb_ub.y, bb_ub.z);
 
@@ -886,7 +997,15 @@ void PointCloudView::Render() {
 	for (char* ch = tmp; *ch != 0x00; ch++) {
 		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, *ch);
 	}
+
+	const glm::vec3& cp = camera.pos;
+	sprintf(tmp, "cam: (%.2f, %.2f, %.2f), flags=%s", cp.x, cp.y, cp.z, g_flags.to_string().c_str());
 	glWindowPos2i(x, WIN_H - y + 16);
+	for (char* ch = tmp; *ch != 0x00; ch++) {
+		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, *ch);
+	}
+
+	glWindowPos2i(x, WIN_H - y + 28);
 	const char* title = "Vertex View";
 	for (int i=0; i<strlen(title); i++) {
 		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, title[i]);
