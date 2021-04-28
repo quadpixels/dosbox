@@ -4,6 +4,8 @@
 #include <string.h>
 #include <vector>
 #include <string>
+#include <glm/glm.hpp>
+#include <fstream>
 
 // How to visualize bytes/words
 class BytesToPixelIntf {
@@ -178,7 +180,27 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip);
 
 struct PointCloudView : public MyView {
 	int x, y, w, h;
+	glm::vec3 sum, bb_ub, bb_lb;
+	int num_verts;
+	std::vector<std::vector<glm::vec3> > polygons;
+	std::vector<glm::vec3> curr_polygon;
+
+	bool should_clear;
+	bool should_append;
+
 	void Render() override;
+	PointCloudView();
+	
+	void BeginNewPolygon();
+	void AddVertex(glm::vec3 v);
+	void Clear();
+	void RequestClear();
+	int GetPolyCount() {
+		return int(polygons.size() + (curr_polygon.size()>0?1:0));
+	}
+
+	void WriteToFile(const std::string& file_name);
+	void ReadFromFile(const std::string& file_name);
 };
 
 #endif

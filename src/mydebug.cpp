@@ -13,7 +13,9 @@
 #include <iostream>
 #include <iomanip>
 
+
 #ifndef MEM_VIZ_STANDALONE
+#include "cpu.h"
 extern void PauseDOSBox(bool pressed);
 extern void DEBUG_Enable(bool pressed);
 #endif
@@ -485,6 +487,11 @@ void StartMyDebugThread(int argc, char** argv) {
 	g_pointcloudview->w = 300;
 	g_pointcloudview->h = 300;
 
+
+	if (argc > 1) {
+		g_pointcloudview->ReadFromFile(argv[1]);
+	}
+
 	pthread_create(&g_thread, NULL, MyDebugInit, 0);
 }
 
@@ -531,7 +538,7 @@ void update() {
 int g_frame_count = 0;
 void render() {
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	glClearColor(0.15f, 0.15f, 0.15f, 1.0f);
+	glClearColor(0.3f, 0.3f, 0.3f, 1.0f);
 	glDisable(GL_LIGHTING);
 
 	g_memview->Render();
@@ -561,6 +568,7 @@ void keyboard(unsigned char key, int x, int y) {
 	case '-': g_memview->Zoom(-1); break; // Zoom out
 	case '=': g_memview->Zoom(1); break; // Zoom in
 	case 'w': g_log_writes = !g_log_writes; break;
+	case 's': g_pointcloudview->WriteToFile("POINT_CLOUD"); break;
 #ifdef MEM_VIZ_STANDALONE
 	case 'r': {
 		g_memview->LoadDummy();
@@ -571,10 +579,12 @@ void keyboard(unsigned char key, int x, int y) {
 	case 'r': {
 		g_logview->Clear();
 		g_memview->ClearHistograms();
+		g_pointcloudview->RequestClear();
 		break;
 	}
 	case 'p': { // Gun-specific debug settings.
 		DEBUG_Enable(true);
+		g_logview->AppendEntry("Setting core type to Simple");
 		g_memview->SetAddress(0x8394f0);
 		break;
 	}
@@ -624,6 +634,7 @@ int main(int argc, char** argv) {
 
 LogView::LogView(int capacity) {
 	entries.resize(capacity);
+	idx = 0;
 	left = 720; top = 20;
 }
 
@@ -654,23 +665,45 @@ void LogView::Clear() {
 }
 
 // from debug.cpp, on my current system
-typedef unsigned short Bit16u;
-typedef unsigned int   Bit32u;
-typedef unsigned int   PhysPt;
+#ifdef MEM_VIZ_STANDALONE
+typedef unsigned short     Bit16u;
+typedef unsigned int       Bit32u;
+typedef unsigned long long Bit64u;
+typedef unsigned int       PhysPt;
+#endif
+
 #ifndef MEM_VIZ_STANDALONE
 extern Bit32u GetAddress(Bit16u seg, Bit32u offset);
 extern Bit32u mem_readd(PhysPt address);
+Bit64u MyReadQ(PhysPt address) {
+	Bit64u low32 = (Bit64u)(mem_readd(address));
+	Bit64u high32 = (Bit64u)(mem_readd(address+4));
+	return (high32<<32) | low32;
+}
 extern unsigned Get32BitRegister(const std::string& name);
 #else // Dummy for standalone version
 Bit32u GetAddress(Bit16u seg, Bit32u offset) { return 0; }
 Bit32u mem_readd(PhysPt address) { return 0; }
+Bit64u MyReadQ(PhysPt address) { return 0; }
 unsigned Get32BitRegister(const std::string& name) { return 0; }
 #endif
 
 void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
 	// GUN DBG
 	char buf[111];
-	if (seg_cs == 0x0160 && ip == 0x283d17) {
+	if (seg_cs == 0x0160 && ip == 0x283c90) {
+
+		if (g_pointcloudview->should_clear) {
+			g_pointcloudview->should_clear = false;
+			g_pointcloudview->Clear();
+			g_pointcloudview->should_append = true;
+		}
+		else if (g_pointcloudview->should_append == true &&
+		         g_pointcloudview->num_verts > 0) {
+			g_pointcloudview->should_append = false;
+		}
+	}
+	else if (seg_cs == 0x0160 && ip == 0x283d17) {
 		int dw0 = mem_readd(GetAddress(0x0160, 0x5214a0));
 		int dw1 = mem_readd(GetAddress(0x0160, 0x5214a4));
 		int dw2 = mem_readd(GetAddress(0x0160, 0x5214a8));
@@ -680,7 +713,7 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
 		// Typical valus: [1,-144,144,-62], single player, 90% view
 		//                [1,-160,160,-62], single player, 100% view
 		//                [1,-124,124,-48], multiplayer
-		sprintf(buf, "%04X:%08X, 0x5214a0:[%d,%d,%d,%d], ustack56=%X", seg_cs, ip, cs,
+		sprintf(buf, "%04X:%08X, 0x5214a0:[%d,%d,%d,%d], ustack56=%X", seg_cs, ip,
 		  dw0, dw1, dw2, dw3, dw4);
 		g_logview->AppendEntry(buf);
 	} else if (seg_cs == 0x0160 && ip == 0x283dc0) {
@@ -695,6 +728,8 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
 		unsigned eax = Get32BitRegister("eax");
 		sprintf(buf, " *(istack192+0x6a)=%u", eax);
 		//g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == 0x283ec3) {
+		g_pointcloudview->BeginNewPolygon();
 	} else if (seg_cs == 0x0160 && ip == 0x283fbe) {
 		unsigned ecx = Get32BitRegister("ecx");
 		sprintf(buf, " istack172=%u", ecx);
@@ -721,7 +756,42 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip) {
 			unsigned dword71 = mem_readd(GetAddress(0x0168, istack148));
 			sprintf(buf, "  [%d] @ %08X, [71]=%d", i, istack148, (0xFF & dword71)); g_logview->AppendEntry(buf);
 		}
+	} else if (seg_cs == 0x0160 && ip == 0x2842aa) {
+		if (g_pointcloudview->should_append) {
+			unsigned eax = Get32BitRegister("eax");
+			Bit64u elt0 = MyReadQ(GetAddress(0x0168, eax));
+			Bit64u elt1 = MyReadQ(GetAddress(0x0168, eax+8));
+			Bit64u elt2 = MyReadQ(GetAddress(0x0168, eax+16));
+			double d0 = *(reinterpret_cast<double*>(&elt0));
+			double d1 = *(reinterpret_cast<double*>(&elt1));
+			double d2 = *(reinterpret_cast<double*>(&elt2));
+			glm::vec3 v = glm::vec3(float(d0), float(d1), float(d2));
+			g_pointcloudview->AddVertex(v);
+		}
 	}
+}
+
+void MyPushMatrixes() {
+	glMatrixMode(GL_PROJECTION); glPushMatrix();
+	glMatrixMode(GL_MODELVIEW);  glPushMatrix();
+}
+
+void MyPopMatrixes() {
+	glMatrixMode(GL_PROJECTION); glPopMatrix();
+	glMatrixMode(GL_MODELVIEW);  glPopMatrix();
+}
+
+PointCloudView::PointCloudView() {
+	std::vector<glm::vec3> vertices = {
+		glm::vec3(-368.0f, -416.0f, -442.0f),
+		glm::vec3(-168.0f, -386.0f, -402.0f),
+		glm::vec3(-268.0f, -376.0f, -242.0f),
+	};
+	for (int i=0; i<vertices.size(); i++) {
+		AddVertex(vertices[i]);
+	}
+	should_clear = false;
+	should_append = true;
 }
 
 void PointCloudView::Render() {
@@ -743,35 +813,170 @@ void PointCloudView::Render() {
 	}
 
 	glMatrixMode(GL_PROJECTION);
+	
 	glViewport(x, WIN_H-y-h, w, h);
 	glLoadIdentity();
-	gluPerspective(60, w*1.0f/h, 0.1, 100);
-	GLenum e = glGetError();
-	if (e != 0) {
-		printf("GL error: %d\n", e);
-	}
+	gluPerspective(60, w*1.0f/h, 0.1, 100000);
 	
 	const float rot_x = g_frame_count * 0.5f, rot_y = g_frame_count * 0.2f;
 	glMatrixMode(GL_MODELVIEW);
 	glPushMatrix();
 	glLoadIdentity();
-	glTranslatef(0, 0, -40);
+
+	// Translate
+	const int N = std::max(1, num_verts);
+	glm::vec3 center = sum*(1.0f / N);
+	glm::vec3 extent = bb_ub - bb_lb;
+	float delta_z = 10+sqrtf(glm::dot(extent, extent));
+
+	glTranslatef(0, 0, -delta_z);
 	glRotatef(rot_x, 1, 0, 0);
 	glRotatef(rot_y, 0, 1, 0);
-	const float r = 11.0f;
-	const float xs[] = { -r,-r,-r,-r, r, r, r, r },
-	            ys[] = { -r,-r, r, r,-r,-r, r, r },
-	            zs[] = { -r, r,-r, r,-r, r,-r, r };
+	
 	glPointSize(3);
 	glBegin(GL_POINTS);
-	for (int i=0; i<8; i++) { glVertex3f(xs[i], ys[i], zs[i]); }
+	
+	for (int i=0; i<int(polygons.size() + 1); i++) {
+		std::vector<glm::vec3>* p = nullptr;
+		if (i == polygons.size()) p = &(curr_polygon);
+		else p = &(polygons[i]);
+		for (int j=0; j<int(p->size()); j++) {
+			glm::vec3 v = p->at(j);
+			glVertex3f(v.x - (center.x),
+								v.y - (center.y), 
+								v.z - (center.z));
+		}
+	}
+
 	glEnd();
-	glutWireCube(r);
 	glPointSize(1);
+
+	for (int i=0; i <= int(polygons.size()); i++) {
+		std::vector<glm::vec3>* p;
+		if (i == int(polygons.size())) {
+			p = &(curr_polygon);
+		} else {
+			p = &(polygons[i]);
+		}
+		glBegin(GL_LINE_LOOP);
+		for (int j=0; j<int(p->size()); j++) {
+			glm::vec3 v = p->at(j);
+			glVertex3f(v.x - (center.x),
+								v.y - (center.y), 
+								v.z - (center.z));
+		}
+		glEnd();
+	}
 	glPopMatrix();
 
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
 	glOrtho(-1, 1, -1, 1, -1, 1);
 	glViewport(0, 0, WIN_W, WIN_H);
+	char tmp[200];
+	
+	sprintf(tmp, "%d verts, %d polys, center:(%.2f, %.2f, %.2f), delta_z=%.2f, bb:(%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f", 
+		int(num_verts), GetPolyCount(),
+		center.x, center.y, center.z, delta_z,
+		bb_lb.x, bb_lb.y, bb_lb.z,
+		bb_ub.x, bb_ub.y, bb_ub.z);
+
+	glWindowPos2i(x, WIN_H - y + 4);
+	glColor3f(1, 1, 1);
+	for (char* ch = tmp; *ch != 0x00; ch++) {
+		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, *ch);
+	}
+	glWindowPos2i(x, WIN_H - y + 16);
+	const char* title = "Vertex View";
+	for (int i=0; i<strlen(title); i++) {
+		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, title[i]);
+	}
+}
+
+void PointCloudView::AddVertex(glm::vec3 v) {
+	curr_polygon.push_back(v);
+	if (curr_polygon.size() == 1 && polygons.size() == 0) {
+		bb_ub = v; bb_lb = v;
+	}
+	bb_ub.x = std::max(bb_ub.x, v.x);
+	bb_ub.y = std::max(bb_ub.y, v.y);
+	bb_ub.z = std::max(bb_ub.z, v.z);
+	bb_lb.x = std::min(bb_lb.x, v.x);
+	bb_lb.y = std::min(bb_lb.y, v.y);
+	bb_lb.z = std::min(bb_lb.z, v.z);
+	sum += v;
+	num_verts ++;
+}
+
+void PointCloudView::Clear() {
+	polygons.clear();
+	curr_polygon.clear();
+	bb_ub = glm::vec3(-1e10, -1e10, -1e10);
+	bb_lb = glm::vec3( 1e10,  1e10,  1e10);
+	sum   = glm::vec3(    0,     0,     0);
+	should_append = true;
+	num_verts = 0;
+}
+
+void PointCloudView::RequestClear() {
+	should_clear = true;
+}
+
+void PointCloudView::BeginNewPolygon() {
+	if (curr_polygon.size() > 0) {
+		polygons.push_back(curr_polygon);
+		curr_polygon.clear();
+	}
+}
+
+void PointCloudView::WriteToFile(const std::string& file_name) {
+	std::ofstream ofs(file_name);
+	if (ofs.good() == false) {
+		printf("Oh! Could not write to file %s\n", file_name.c_str());
+		return;
+	}
+
+	const int n = int(polygons.size())+1;
+	ofs.write((const char*)&n, sizeof(int));
+
+	for (int i=0; i<n; i++) {
+		std::vector<glm::vec3>* p;
+		if (i == n-1) { p = &(curr_polygon); }
+		else p = &(polygons[i]);
+
+		const int m = int(p->size());
+		ofs.write((const char*)&m, sizeof(int));
+		for (int j=0; j<m; j++) {
+			glm::vec3 v = p->at(j);
+			ofs.write((const char*)&v.x, sizeof(glm::vec3));
+		}
+	}
+	ofs.close();
+	g_logview->AppendEntry("Saved data to " + file_name + ", " + std::to_string(n+1) + " polygons");
+}
+
+void PointCloudView::ReadFromFile(const std::string& file_name) {
+	std::ifstream ifs(file_name);
+	if (ifs.good() == false) {
+		g_logview->AppendEntry("Could not load data from " + file_name);
+		return;
+	}
+
+	polygons.clear();
+	curr_polygon.clear();
+
+	int n;
+	ifs.read((char*)&n, sizeof(int));
+	for (int i=0; i<n; i++) {
+		BeginNewPolygon();
+		int m;
+		ifs.read((char*)&m, sizeof(int));
+		for (int i=0; i<m; i++) {
+			glm::vec3 v;
+			ifs.read((char*)&v.x, sizeof(glm::vec3));
+			AddVertex(v);
+		}
+	}
+
+	g_logview->AppendEntry("Loaded data from " + file_name + ", " + std::to_string(n) + " polygons");
 }
