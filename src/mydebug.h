@@ -7,6 +7,8 @@
 #include <glm/glm.hpp>
 #include <fstream>
 
+glm::vec3 GunCoordToOpenglCoord(const glm::vec3& p);
+
 // How to visualize bytes/words
 class BytesToPixelIntf {
 public:
@@ -25,7 +27,9 @@ struct ViewWindow {
 };
 
 struct MyView {
+	bool is_visible;
 	virtual void Render() = 0;
+	MyView() : is_visible(true) {}
 	virtual ~MyView() { }
 };
 
@@ -109,11 +113,13 @@ struct MemView : public MyView {
 // TODO Next step:
 // Get the call stack for writes
 struct PerRowHistogram {
+	bool is_visible;
 	static int bucket_limit;
 	std::string title;
 	float color[3];
 	void SetColor(const float r, const float g, const float b) { color[0] = r; color[1] = g; color[2] = b; }
 	PerRowHistogram(MemView* _p, const std::string& _title) {
+		is_visible = true;
 		parent = _p; title = _title;
 		buckets.resize(bucket_limit);
 		total_count = 0;
@@ -183,26 +189,35 @@ struct Camera {
 	glm::vec3 pos;
 	Camera() : orientation(glm::mat3(1)) {}
 	void RotateAlongLocalAxis(const glm::vec3& axis, const float radians);
+	void RotateAlongGlobalAxis(const glm::vec3& axis, const float radians);
 	void MoveAlongLocalAxis(const glm::vec3& delta_pos);
+	void MoveAlongGlobalAxis(const glm::vec3& delta_pos);
+	void MoveAlongXZ(const float dx, const float dz);
 	void Apply();
 };
 
 struct PointCloudView : public MyView {
 	int x, y, w, h;
+	int x0, y0, w0, h0;
 	glm::vec3 sum, bb_ub, bb_lb;
 	int num_verts;
 	std::vector<std::vector<glm::vec3> > polygons;
 	std::vector<glm::vec3> curr_polygon;
 	Camera camera;
+	float speed_multiplier;
 
 	bool should_clear;
 	bool should_append;
+
+	void SaveXYWH();
+	void LoadXYWH();
+	void Maximize();
 
 	void Render() override;
 	PointCloudView();
 	
 	void BeginNewPolygon();
-	void AddVertex(glm::vec3 v);
+	void AddGunVertex(glm::vec3 v);
 	void Clear();
 	void RequestClear();
 	int GetPolyCount() {
@@ -211,6 +226,11 @@ struct PointCloudView : public MyView {
 
 	void WriteToFile(const std::string& file_name);
 	void ReadFromFile(const std::string& file_name);
+	void ChangeSpeedMultiplier(const float mult);
+	void SetCrystalBallView(const glm::vec3& extent) {
+		float delta_z = 10+sqrtf(glm::dot(extent, extent));
+		camera.pos = glm::vec3(0, 0, -delta_z);
+	}
 };
 
 #endif

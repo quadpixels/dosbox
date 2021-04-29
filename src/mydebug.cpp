@@ -152,6 +152,7 @@ bool MemView::UpdateByte(int offset, unsigned char ch) {
 }
 
 void MemView::Render() {
+	if (!is_visible) return;
 	glWindowPos2i(left, WIN_H - top - disp_h);
 	glDrawPixels(disp_w, disp_h, bytes2pixel->Format(), GL_UNSIGNED_BYTE, pixels);
 	glWindowPos2i(left, WIN_H - top + 4);
@@ -303,7 +304,7 @@ inline int MyLog2(unsigned x) {
 // bucket_idx: Bucket ID (address / line_stride
 // max_bin_value: max value to normalize against; if set to 0, will use log(2)
 void PerRowHistogram::Render(int left, int top, int w, int h, int bucket_idx, int buckets_per_line, unsigned max_bin_value) {
-
+	if (!is_visible) return;
 	const int TEXT_H = 11;
 	glWindowPos2i(left, WIN_H - top + 4 + TEXT_H);
 	for (char ch : title) { glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, ch); }
@@ -378,6 +379,7 @@ TextureView::TextureView(int w, int h, int size) {
 }
 
 void TextureView::Render() {
+	if (!is_visible) return;
 	const int PAD = 1;
 	const int x0 = left - PAD, x1 = left + disp_w + PAD, y0 = WIN_H - (top - PAD), y1 = WIN_H - (top + disp_h + PAD);
 	glBegin(GL_LINE_LOOP);
@@ -490,7 +492,7 @@ void StartMyDebugThread(int argc, char** argv) {
 	g_pointcloudview->y = 360;
 	g_pointcloudview->w = 300;
 	g_pointcloudview->h = 300;
-
+	g_pointcloudview->SaveXYWH();
 
 	if (argc > 1) {
 		g_pointcloudview->ReadFromFile(argv[1]);
@@ -530,6 +532,24 @@ void* MyDebugInit(void* x) {
 	return NULL;
 }
 
+bool is_pointcloud_maximized = false;
+void SwitchMaximizedPointCloudViewMode() {
+	if (is_pointcloud_maximized == false) {
+		g_logview->is_visible = false;
+		g_memview->is_visible = false;
+		g_texture_view->is_visible = false;
+		g_pointcloudview->Maximize();
+		is_pointcloud_maximized = true;
+	} else {
+		g_logview->is_visible = true;
+		g_memview->is_visible = true;
+		g_texture_view->is_visible = true;
+		g_pointcloudview->LoadXYWH();
+		is_pointcloud_maximized = false;
+	}
+
+}
+
 ViewWindow* MyDebugViewWindow() { return &(g_memview->view_window); }
 
 void update() {
@@ -541,16 +561,18 @@ void update() {
 	// Move camera
 	if (g_pointcloudview) {
 		Camera* camera = &(g_pointcloudview->camera);
-		const float linspeed = 1, rotspeed = 0.012;
-		
-		if (g_flags.test(0)) { camera->MoveAlongLocalAxis(glm::vec3(0, 0, -linspeed)); }
-		if (g_flags.test(1)) { camera->MoveAlongLocalAxis(glm::vec3(0, 0,  linspeed)); }
-		if (g_flags.test(2)) { camera->MoveAlongLocalAxis(glm::vec3(-linspeed, 0, 0)); }
-		if (g_flags.test(3)) { camera->MoveAlongLocalAxis(glm::vec3( linspeed, 0, 0)); }
-		if (g_flags.test(4)) { camera->RotateAlongLocalAxis(glm::vec3(-1,  0, 0), rotspeed); }
-		if (g_flags.test(5)) { camera->RotateAlongLocalAxis(glm::vec3( 1,  0, 0), rotspeed); }
-		if (g_flags.test(6)) { camera->RotateAlongLocalAxis(glm::vec3( 0,  1, 0), rotspeed); }
-		if (g_flags.test(7)) { camera->RotateAlongLocalAxis(glm::vec3( 0, -1, 0), rotspeed); }
+		const float mult = g_pointcloudview->speed_multiplier;
+		const float linspeed = 1 * mult, rotspeed = 0.04;
+		if (g_flags.test(0)) { camera->MoveAlongXZ(0, -linspeed); }
+		if (g_flags.test(1)) { camera->MoveAlongXZ(0,  linspeed); }
+		if (g_flags.test(2)) { camera->MoveAlongLocalAxis(glm::vec3( linspeed, 0, 0)); }
+		if (g_flags.test(3)) { camera->MoveAlongLocalAxis(glm::vec3(-linspeed, 0, 0)); }
+		if (g_flags.test(4)) { camera->RotateAlongLocalAxis(glm::vec3( 1,  0, 0), rotspeed); }
+		if (g_flags.test(5)) { camera->RotateAlongLocalAxis(glm::vec3(-1,  0, 0), rotspeed); }
+		if (g_flags.test(6)) { camera->RotateAlongGlobalAxis(glm::vec3( 0,  1, 0), rotspeed); }
+		if (g_flags.test(7)) { camera->RotateAlongGlobalAxis(glm::vec3( 0, -1, 0), rotspeed); }
+		if (g_flags.test(8)) { camera->MoveAlongGlobalAxis(glm::vec3(0,  linspeed, 0)); }
+		if (g_flags.test(9)) { camera->MoveAlongGlobalAxis(glm::vec3(0, -linspeed, 0)); }
 	}
 
 	glutPostRedisplay();
@@ -583,43 +605,50 @@ void keyboard(unsigned char key, int x, int y) {
 	bool is_shift = glutGetModifiers() & GLUT_ACTIVE_SHIFT;
 	switch (key) {
 #ifdef MEM_VIZ_STANDALONE
-	case 27: exit(0); break;
+		case 27: exit(0); break;
 #endif
-	case '[': g_memview->PanLines(-32); break;
-	case ']': g_memview->PanLines( 32); break;
-	case '-': g_memview->Zoom(-1); break; // Zoom out
-	case '=': g_memview->Zoom(1); break; // Zoom in
-	case 'w': g_log_writes = !g_log_writes; break;
-	case 's': g_pointcloudview->WriteToFile("POINT_CLOUD"); break;
+		case '[': g_memview->PanLines(-32); break;
+		case ']': g_memview->PanLines( 32); break;
+		case '-': g_memview->Zoom(-1); break; // Zoom out
+		case '=': g_memview->Zoom(1); break; // Zoom in
+		case 'w': g_log_writes = !g_log_writes; break;
+		case 's': g_pointcloudview->WriteToFile("POINT_CLOUD"); break;
 #ifdef MEM_VIZ_STANDALONE
-	case 'r': {
-		g_memview->LoadDummy();
-		g_texture_view->LoadDummy();
-	}
-	break;
+		case 'r': {
+			g_memview->LoadDummy();
+			g_texture_view->LoadDummy();
+		}
+		break;
 #else
-	case 'r': {
-		g_logview->Clear();
-		g_memview->ClearHistograms();
-		g_pointcloudview->RequestClear();
-		break;
-	}
-	case 'p': { // Gun-specific debug settings.
-		DEBUG_Enable(true);
-		g_logview->AppendEntry("Setting core type to Simple");
-		g_memview->SetAddress(0x8394f0);
-		break;
-	}
-	case 'g': g_gun_debug = !g_gun_debug; break;
+		case 'r': {
+			g_logview->Clear();
+			g_memview->ClearHistograms();
+			g_pointcloudview->RequestClear();
+			break;
+		}
+		case 'P': { // Gun-specific debug settings.
+			DEBUG_Enable(true);
+			g_logview->AppendEntry("Setting core type to Simple");
+			g_memview->SetAddress(0x8394f0);
+			break;
+		}
+		case 'g': g_gun_debug = !g_gun_debug; break;
 #endif
-	case 'i': g_flags.set(0); break;
-	case 'k': g_flags.set(1); break;
-	case 'j': g_flags.set(2); break;
-	case 'l': g_flags.set(3); break;
-	case 'I': g_flags.set(4); break;
-	case 'K': g_flags.set(5); break;
-	case 'J': g_flags.set(6); break;
-	case 'L': g_flags.set(7); break;
+		case 'i': g_flags.set(0); break;
+		case 'k': g_flags.set(1); break;
+		case 'j': g_flags.set(6); break;
+		case 'l': g_flags.set(7); break;
+		case 'u': g_flags.set(8); break;
+		case 'o': g_flags.set(9); break;
+
+		case 'I': g_flags.set(4); break;
+		case 'K': g_flags.set(5); break;
+		case 'J': g_flags.set(2); break;
+		case 'L': g_flags.set(3); break;
+
+		case 'p': g_pointcloudview->ChangeSpeedMultiplier(2.0f); break;
+		case ';': g_pointcloudview->ChangeSpeedMultiplier(0.5f); break;
+		case 9:  SwitchMaximizedPointCloudViewMode(); break;
 	}
 }
 
@@ -627,12 +656,14 @@ void keyboardUp(unsigned char key, int x, int y) {
 	switch (key) {
 		case 'i': g_flags.reset(0); break;
 		case 'k': g_flags.reset(1); break;
-		case 'j': g_flags.reset(2); break;
-		case 'l': g_flags.reset(3); break;
+		case 'j': g_flags.reset(6); break;
+		case 'l': g_flags.reset(7); break;
 		case 'I': g_flags.reset(4); break;
 		case 'K': g_flags.reset(5); break;
-		case 'J': g_flags.reset(6); break;
-		case 'L': g_flags.reset(7); break;
+		case 'J': g_flags.reset(2); break;
+		case 'L': g_flags.reset(3); break;
+		case 'u': g_flags.reset(8); break;
+		case 'o': g_flags.reset(9); break;
 	}
 }
 
@@ -685,6 +716,7 @@ LogView::LogView(int capacity) {
 }
 
 void LogView::Render() {
+	if (!is_visible) return;
 	const int LINE_HEIGHT = 12;
 	const int disp_w = 320, disp_h = LINE_HEIGHT * int(entries.size());
 	const int PAD = 1;
@@ -817,7 +849,7 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int*
 			double d1 = *(reinterpret_cast<double*>(&elt1));
 			double d2 = *(reinterpret_cast<double*>(&elt2));
 			glm::vec3 v = glm::vec3(float(d0), float(d1), float(d2));
-			g_pointcloudview->AddVertex(v);
+			g_pointcloudview->AddGunVertex(v);
 		}
 	}
 }
@@ -839,13 +871,18 @@ PointCloudView::PointCloudView() {
 		glm::vec3(-268.0f, -376.0f, -242.0f),
 	};
 	for (int i=0; i<vertices.size(); i++) {
-		AddVertex(vertices[i]);
+		AddGunVertex(vertices[i]);
 	}
 	should_clear = false;
 	should_append = true;
+	speed_multiplier = 512.0f;
+	num_verts = 0;
 }
 
 void Camera::Apply() {
+	//
+	//
+	// 1. About data layout
 	// M is column-major
 	//
 	// glm::mat3 is a set of 3 glm::vec3's, each vec3 is a column in the mat3,
@@ -866,8 +903,15 @@ void Camera::Apply() {
 	// o[0][2]  o[1][2]  o[2][2]  pos.z
 	// 0        0        0        1
 	//
+	// 2. About transformation
+	//
+	// The MV matrix transforms the world. The camera remains at the origin.
+	// As such we set the orientation to the inverse, and set the position
+	// to the position in camera's local space.
+	//
 	float M[16];
-	const glm::mat3& o = orientation;
+	const glm::mat3 o = glm::inverse(orientation);
+	const glm::vec3 p = o * pos;
 	M[0] = o[0].x;
 	M[1] = o[0].y;
 	M[2] = o[0].z;
@@ -880,9 +924,9 @@ void Camera::Apply() {
 	M[9] = o[2].y;
 	M[10] = o[2].z;
 	M[11] = 0;
-	M[12] = pos.x;
-	M[13] = pos.y;
-	M[14] = pos.z;
+	M[12] = p.x;
+	M[13] = p.y;
+	M[14] = p.z;
 	M[15] = 1;
 
 	glMatrixMode(GL_MODELVIEW);
@@ -899,8 +943,28 @@ void Camera::RotateAlongLocalAxis(const glm::vec3& axis, const float radians) {
 	orientation *= r;
 }
 
+void Camera::RotateAlongGlobalAxis(const glm::vec3& axis, const float radians) {
+	RotateAlongLocalAxis(glm::inverse(orientation) * axis, radians);
+}
+
 void Camera::MoveAlongLocalAxis(const glm::vec3& delta_pos) {
-	pos += orientation * delta_pos;
+	glm::vec3 p = orientation * delta_pos;
+	pos += p;
+}
+
+void Camera::MoveAlongGlobalAxis(const glm::vec3& delta_pos) {
+	glm::vec3 p = delta_pos;
+	pos += p;
+}
+
+void Camera::MoveAlongXZ(const float dx, const float dz) {
+	glm::vec3 z = orientation[2] * (-1.0f);
+	z.y = 0;
+	if (glm::dot(z, z) < 1e-4) z = glm::vec3(1, 0, 0);
+	z = glm::normalize(z);
+	glm::vec3 x;
+	x.y = 0; x.x = z.z; x.z = -z.x;
+	pos += (x*dx + z*dz);
 }
 
 void PointCloudView::Render() {
@@ -936,14 +1000,14 @@ void PointCloudView::Render() {
 	const int N = std::max(1, num_verts);
 	glm::vec3 center = sum*(1.0f / N);
 	glm::vec3 extent = bb_ub - bb_lb;
-	float delta_z = 10+sqrtf(glm::dot(extent, extent));
+	
 
-	camera.pos.z = -delta_z;
 	camera.Apply();
 
 	//glRotatef(rot_x, 1, 0, 0);
 	//glRotatef(rot_y, 0, 1, 0);
 	
+	#if 0
 	glPointSize(3);
 	glBegin(GL_POINTS);
 	
@@ -952,15 +1016,15 @@ void PointCloudView::Render() {
 		if (i == polygons.size()) p = &(curr_polygon);
 		else p = &(polygons[i]);
 		for (int j=0; j<int(p->size()); j++) {
-			glm::vec3 v = p->at(j);
+			glm::vec3 v = GunCoordToOpenglCoord(p->at(j));
 			glVertex3f(v.x - (center.x),
 								v.y - (center.y), 
 								v.z - (center.z));
 		}
 	}
-
 	glEnd();
 	glPointSize(1);
+	#endif
 
 	for (int i=0; i <= int(polygons.size()); i++) {
 		std::vector<glm::vec3>* p;
@@ -969,14 +1033,30 @@ void PointCloudView::Render() {
 		} else {
 			p = &(polygons[i]);
 		}
+
 		glBegin(GL_LINE_LOOP);
 		for (int j=0; j<int(p->size()); j++) {
-			glm::vec3 v = p->at(j);
+			glm::vec3 v = GunCoordToOpenglCoord(p->at(j));
+			glm::vec3 cp = camera.pos;
+			
+			glm::vec3 vp = v - center + cp;
+			float dist = glm::dot(vp, vp);
+			float intensity = 1;
+			const float threshold = 222222;
+			if (dist > threshold) {
+				intensity = 0.2;
+			} else {
+				intensity = 1 - (dist / threshold * 0.8f);
+			}
+			//printf("dist=%g, intensity=%g\n", dist, intensity);
+			glColor3f(intensity, intensity, intensity);
 			glVertex3f(v.x - (center.x),
-								v.y - (center.y), 
-								v.z - (center.z));
+								 v.y - (center.y), 
+								 v.z - (center.z));
 		}
 		glEnd();
+
+		glColor3f(1, 1, 1);
 	}
 	glPopMatrix();
 
@@ -986,11 +1066,10 @@ void PointCloudView::Render() {
 	glViewport(0, 0, WIN_W, WIN_H);
 	char tmp[200];
 	
-	sprintf(tmp, "%d verts, %d polys, center:(%.2f, %.2f, %.2f) bb:(%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f", 
+	sprintf(tmp, "%d verts, %d polys, center:(%.2f, %.2f, %.2f)",
 		int(num_verts), GetPolyCount(),
-		center.x, center.y, center.z,
-		bb_lb.x, bb_lb.y, bb_lb.z,
-		bb_ub.x, bb_ub.y, bb_ub.z);
+		center.x, center.y, center.z
+	);
 
 	glWindowPos2i(x, WIN_H - y + 4);
 	glColor3f(1, 1, 1);
@@ -998,21 +1077,31 @@ void PointCloudView::Render() {
 		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, *ch);
 	}
 
-	const glm::vec3& cp = camera.pos;
-	sprintf(tmp, "cam: (%.2f, %.2f, %.2f), flags=%s", cp.x, cp.y, cp.z, g_flags.to_string().c_str());
+	sprintf(tmp, "bb:(%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f)",
+		bb_lb.x, bb_lb.y, bb_lb.z,
+		bb_ub.x, bb_ub.y, bb_ub.z);
 	glWindowPos2i(x, WIN_H - y + 16);
 	for (char* ch = tmp; *ch != 0x00; ch++) {
 		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, *ch);
 	}
 
+	const glm::vec3& cp = camera.pos;
+	sprintf(tmp, "cam: (%.2f, %.2f, %.2f), flags=%s, mult:%.2f",
+		cp.x, cp.y, cp.z, g_flags.to_string().c_str(),
+		speed_multiplier);
 	glWindowPos2i(x, WIN_H - y + 28);
+	for (char* ch = tmp; *ch != 0x00; ch++) {
+		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, *ch);
+	}
+
+	glWindowPos2i(x, WIN_H - y + 40);
 	const char* title = "Vertex View";
 	for (int i=0; i<strlen(title); i++) {
 		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, title[i]);
 	}
 }
 
-void PointCloudView::AddVertex(glm::vec3 v) {
+void PointCloudView::AddGunVertex(glm::vec3 v) {
 	curr_polygon.push_back(v);
 	if (curr_polygon.size() == 1 && polygons.size() == 0) {
 		bb_ub = v; bb_lb = v;
@@ -1093,9 +1182,38 @@ void PointCloudView::ReadFromFile(const std::string& file_name) {
 		for (int i=0; i<m; i++) {
 			glm::vec3 v;
 			ifs.read((char*)&v.x, sizeof(glm::vec3));
-			AddVertex(v);
+			AddGunVertex(v);
 		}
 	}
 
 	g_logview->AppendEntry("Loaded data from " + file_name + ", " + std::to_string(n) + " polygons");
+
+	glm::vec3 extent = bb_ub - bb_lb;
+	SetCrystalBallView(extent);
+}
+
+void PointCloudView::ChangeSpeedMultiplier(const float mult) {
+	speed_multiplier *= mult;
+	if (speed_multiplier <= 1) speed_multiplier = 1;
+	else if (speed_multiplier >= 8192) speed_multiplier = 8192;
+}
+
+glm::vec3 GunCoordToOpenglCoord(const glm::vec3& p) {
+	glm::vec3 ret;
+	ret.x =  p.x;
+	ret.y =  p.z;
+	ret.z = -p.y;
+	return ret;
+}
+
+void PointCloudView::SaveXYWH() {
+	x0 = x; y0 = y; w0 = w; h0 = h;
+}
+
+void PointCloudView::LoadXYWH() {
+	x = x0; y = y0; w = w0; h = h0;
+}
+
+void PointCloudView::Maximize() {
+	x = 4; y = 40; w = WIN_W - 8; h = WIN_H - 44;
 }
