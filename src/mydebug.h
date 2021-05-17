@@ -9,6 +9,12 @@
 
 glm::vec3 GunCoordToOpenglCoord(const glm::vec3& p);
 
+// Gun Data Structures
+
+struct GunObjectInfo {
+	char data[128];
+};
+
 // How to visualize bytes/words
 class BytesToPixelIntf {
 public:
@@ -203,11 +209,19 @@ struct PointCloudView : public MyView {
 	int num_verts;
 	std::vector<std::vector<glm::vec3> > polygons;
 	std::vector<glm::vec3> curr_polygon;
+	std::vector<std::vector<char> > object_metadata;
+	std::vector<std::vector<std::vector<char> > > face_metadata; // Per-object
+
 	Camera camera;
 	float speed_multiplier;
 
 	bool should_clear;
 	bool should_append;
+	std::vector<bool> visited;
+
+	int focused_object_idx;
+	int focused_face_idx;
+	std::vector<std::pair<int, int> > object_polygon_ranges; // first=starting idx, second=one past last idx
 
 	void SaveXYWH();
 	void LoadXYWH();
@@ -231,6 +245,18 @@ struct PointCloudView : public MyView {
 		float delta_z = 10+sqrtf(glm::dot(extent, extent));
 		camera.pos = glm::vec3(0, 0, -delta_z);
 	}
+
+	void SetVertexVisibility(int idx, bool v);
+
+	void CycleToNextFace();
+	void CycleToPreviousFace();
+	void CycleToNextObject();
+	void CycleToPreviousObject();
+
+	void UnfocusFace() { focused_object_idx = focused_face_idx = -999; }
+
+	void CycleOneFace(int inc);
+	void CycleObject(int inc);
 };
 
 #endif

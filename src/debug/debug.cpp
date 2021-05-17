@@ -1590,7 +1590,7 @@ Bit32u DEBUG_CheckKeys(void) {
 	int key=getch();
 
 	if (key >='1' && key <='5' && strlen(codeViewData.inputStr) == 0) {
-		const Bit32s v[] ={5,500,1000,5000,10000};
+		const Bit32s v[] ={1,500,1000,5000,10000};
 		CPU_Cycles= v[key - '1'];
 
 		skipFirstInstruction = true;
@@ -2624,6 +2624,8 @@ unsigned Get32BitRegister(const std::string& name) {
 	if (name == "ecx") return reg_ecx;
 	else if (name == "eax") return reg_eax;
 	else if (name == "edx") return reg_edx;
+	else if (name == "esp") return reg_esp;
+	else if (name == "esi") return reg_esi;
 	return 0;
 }
 

@@ -603,14 +603,30 @@ void render() {
 
 void keyboard(unsigned char key, int x, int y) {
 	bool is_shift = glutGetModifiers() & GLUT_ACTIVE_SHIFT;
+
+	if (is_pointcloud_maximized) {
+		switch (key) {
+			case 8: g_pointcloudview->UnfocusFace(); break;
+			case '[': g_pointcloudview->CycleToPreviousFace(); break;
+			case ']': g_pointcloudview->CycleToNextFace(); break;
+			case '-': g_pointcloudview->CycleToPreviousObject(); break; // Zoom out
+			case '=': g_pointcloudview->CycleToNextObject(); break; // Zoom in
+			default: break;
+		}
+	} else {
+		switch (key) {
+			case '[': g_memview->PanLines(-32); break;
+			case ']': g_memview->PanLines( 32); break;
+			case '-': g_memview->Zoom(-1); break; // Zoom out
+			case '=': g_memview->Zoom(1); break; // Zoom in
+			default: break;
+		}
+	}
+
 	switch (key) {
 #ifdef MEM_VIZ_STANDALONE
 		case 27: exit(0); break;
 #endif
-		case '[': g_memview->PanLines(-32); break;
-		case ']': g_memview->PanLines( 32); break;
-		case '-': g_memview->Zoom(-1); break; // Zoom out
-		case '=': g_memview->Zoom(1); break; // Zoom in
 		case 'w': g_log_writes = !g_log_writes; break;
 		case 's': g_pointcloudview->WriteToFile("POINT_CLOUD"); break;
 #ifdef MEM_VIZ_STANDALONE
@@ -762,26 +778,54 @@ extern unsigned Get32BitRegister(const std::string& name);
 #else // Dummy for standalone version
 Bit32u GetAddress(Bit16u seg, Bit32u offset) { return 0; }
 Bit32u mem_readd(PhysPt address) { return 0; }
+Bit32u mem_readb(PhysPt address) { return 0; }
 Bit64u MyReadQ(PhysPt address) { return 0; }
 unsigned Get32BitRegister(const std::string& name) { return 0; }
 #endif
 
+// [ESP + esp_offset]
+unsigned GetStackVar(int esp_offset) {
+	unsigned addr = Get32BitRegister("esp");
+	return mem_readd(GetAddress(0x0168, addr + esp_offset));
+}
+
+// [ESI + 8*in_EAX_index]
+unsigned GetSourceVar(int in_EAX_index) {
+	unsigned addr = Get32BitRegister("esi");
+	return mem_readd(GetAddress(0x0168, addr + in_EAX_index * 8));
+}
+
+glm::vec3 ReadVec3DoublePrecision(PhysPt address) {
+	long x = mem_readd(address     ) | (long(mem_readd(address + 4 )) << 32);
+	long y = mem_readd(address + 8 ) | (long(mem_readd(address + 12)) << 32);
+	long z = mem_readd(address + 16) | (long(mem_readd(address + 20)) << 32);
+
+	glm::vec3 ret;
+	ret.x = *reinterpret_cast<double*>(&x);
+	ret.y = *reinterpret_cast<double*>(&y);
+	ret.z = *reinterpret_cast<double*>(&z);
+	return ret;
+}
+
+glm::vec3 ReadVec3SinglePrecision(PhysPt address) {
+	int x = mem_readd(address    );
+	int y = mem_readd(address + 4);
+	int z = mem_readd(address + 8);
+
+	glm::vec3 ret;
+	ret.x = *reinterpret_cast<float*>(&x);
+	ret.y = *reinterpret_cast<float*>(&y);
+	ret.z = *reinterpret_cast<float*>(&z);
+	return ret;
+}
+
+int g_curr_vertex_idx = 0;
+
 void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int* status) {
 	// GUN DBG
 	char buf[111];
-	if (seg_cs == 0x0160 && ip == 0x283c90) {
-
-		if (g_pointcloudview->should_clear) {
-			g_pointcloudview->should_clear = false;
-			g_pointcloudview->Clear();
-			g_pointcloudview->should_append = true;
-		}
-		else if (g_pointcloudview->should_append == true &&
-		         g_pointcloudview->num_verts > 0) {
-			g_pointcloudview->should_append = false;
-		}
-	}
-	else if (seg_cs == 0x0160 && ip == 0x283d17) {
+	
+	if (seg_cs == 0x0160 && ip == 0x283d17) {
 		int dw0 = mem_readd(GetAddress(0x0160, 0x5214a0));
 		int dw1 = mem_readd(GetAddress(0x0160, 0x5214a4));
 		int dw2 = mem_readd(GetAddress(0x0160, 0x5214a8));
@@ -794,62 +838,136 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int*
 		sprintf(buf, "%04X:%08X, 0x5214a0:[%d,%d,%d,%d], ustack56=%X", seg_cs, ip,
 		  dw0, dw1, dw2, dw3, dw4);
 		g_logview->AppendEntry(buf);
-	} else if (seg_cs == 0x0160 && ip == 0x283dc0) {
-		int dw5 = mem_readd(GetAddress(0x0160, 0x490eac));
-		sprintf(buf, "[490eac]=%d", dw5);
-		g_logview->AppendEntry(buf);
-	} else if (seg_cs == 0x0160 && ip == 0x283e05) {
-		unsigned ecx = Get32BitRegister("ecx");
-		sprintf(buf, " *piStack224=%u", ecx);
-		//g_logview->AppendEntry(buf);
-	} else if (seg_cs == 0x0160 && ip == 0x283e63) {
-		unsigned eax = Get32BitRegister("eax");
-		sprintf(buf, " *(istack192+0x6a)=%u", eax);
-		//g_logview->AppendEntry(buf);
 	} else if (seg_cs == 0x0160 && ip == 0x283e7e) {
 		if (g_gun_reveal_minimap) {
-			g_logview->AppendEntry("Attempting to reveal");
+
+			// Determine if player can see this face
+			// if (iStack212 != 0) || 
+			// (*(iStack148+0x7c) & 2 == 0 && *(iStack148 + 0x7c) & 1 != 0) then draw
+			unsigned ebx = Get32BitRegister("ebx");
+			unsigned edx = Get32BitRegister("edx");
+			char iStack148 = mem_readb(GetAddress(0x0160, edx + 0x7c));
+			bool visited = (ebx != 0 || ((iStack148 & 2) == 0 || (iStack148 & 1) != 0));
+			g_pointcloudview->SetVertexVisibility(g_curr_vertex_idx, visited);
+			g_curr_vertex_idx ++;
+
+			//g_logview->AppendEntry("Attempting to reveal");
 			*status = 1;
 		}
-	} else if (seg_cs == 0x0160 && ip == 0x283ec3) {
-		g_pointcloudview->BeginNewPolygon();
-	} else if (seg_cs == 0x0160 && ip == 0x283fbe) {
-		unsigned ecx = Get32BitRegister("ecx");
-		sprintf(buf, " istack172=%u", ecx);
-		//g_logview->AppendEntry(buf);
-	} else if (seg_cs == 0x0160 && ip == 0x283dec) { // Level 1 descriptors
-		unsigned edx = Get32BitRegister("edx");
-		sprintf(buf, " piStack224=%08x; *piStack224=[%d,%d]",
-		  edx, mem_readd(GetAddress(0x0160, edx)), mem_readd(GetAddress(0x0160, edx+4)));
-		g_logview->AppendEntry(buf);
-	} else if (seg_cs == 0x0160 && ip == 0x283e27) { // Level 2 descriptors
-		unsigned eax = Get32BitRegister("eax");
-		sprintf(buf, " (piStack224[1] + iStack216)=%08X", eax); g_logview->AppendEntry(buf);
-	} else if (seg_cs == 0x0160 && ip == 0x28437d) {
-		unsigned eax = Get32BitRegister("eax");
-		sprintf(buf, " iStack152=%d", eax); g_logview->AppendEntry(buf);
-	} else if (seg_cs == 0x0160 && ip == 0x283e29) {
-		unsigned eax = Get32BitRegister("eax");
-		unsigned count = 0xFFFF & mem_readd(GetAddress(0x0168, eax+0x6a)); // DS = 0x0168
-		sprintf(buf, " istack192=%08X; *[6a]=%u", eax, count); g_logview->AppendEntry(buf);
-		unsigned istack148_lb = mem_readd(GetAddress(0x0168, eax+0x6c));
-		sprintf(buf, " Level 3 descriptor should start at %08X:", istack148_lb); g_logview->AppendEntry(buf);
-		for (int i=0; i<std::min(100U, count); i++) {
-			unsigned istack148 = istack148_lb + i * 0x80;
-			unsigned dword71 = mem_readd(GetAddress(0x0168, istack148));
-			sprintf(buf, "  [%d] @ %08X, [71]=%d", i, istack148, (0xFF & dword71)); g_logview->AppendEntry(buf);
+	}
+
+	const bool DUMP_METHOD = 1; // 1: Dump everything at the beginning
+	                            // 2: Dump everything during the rendering process
+
+	// Polygon capture process
+	if (seg_cs == 0x0160 && ip == 0x283cb0) { // Entry point is 283c90, setting ESI done at 283cb0
+		g_curr_vertex_idx = 0;
+		if (g_pointcloudview->should_clear) {
+			g_pointcloudview->should_clear = false;
+			g_pointcloudview->Clear();
+			g_pointcloudview->should_append = true;
+
+			// SCRAPE
+
+			int dw5 = mem_readd(GetAddress(0x0160, 0x490eac));
+			
+			// Level 1 descriptor size is 0x18
+			int fStack160 = GetStackVar(0x3bc); // ESP + 0x3BC
+			int inEax19 = GetSourceVar(0x13);
+
+
+			sprintf(buf, "[490eac]=%d, fStack160=%X, *in_EAX[0x13]=%d", dw5, fStack160, inEax19);
+			g_logview->AppendEntry(buf);
+
+			if (DUMP_METHOD == 1) {
+				int tot_num_faces = 0, tot_num_verts = 0;
+				for (int i=0; i<dw5; i++) {
+					int piStack224 = inEax19 + 24 * i;
+					int n1 = mem_readd(GetAddress(0x0168, piStack224));
+
+					sprintf(buf, "[%d] has %d children piStack224=%X\n", i, n1, piStack224);
+					g_logview->AppendEntry(buf);
+
+					if (n1 > 0) {
+						for (int j=0; j<n1; j++) {
+
+							int tot_num_faces_before = tot_num_faces;
+
+							int addr1 = mem_readd(GetAddress(0x0168, piStack224+4)) + 4*j; // piStack224[1] + iStack216
+							int iStack192 = mem_readd(GetAddress(0x0168, addr1));
+							int num_faces = mem_readd(GetAddress(0x0168, iStack192 + 0x6a)) & 0xFFFF; // Offset 0x6a (106)
+
+							// This object's metadata
+							std::vector<char> om;
+							for (int k=0; k<128; k++) { om.push_back(mem_readb(GetAddress(0x0168, k+iStack192))); }
+							g_pointcloudview->object_metadata.push_back(om);
+
+							// Faces' metadata
+							std::vector<std::vector<char> > fm;
+
+							// The object's transformation
+							glm::vec3 obj_pos = ReadVec3DoublePrecision(GetAddress(0x0168, iStack192));
+							glm::mat3 obj_orientation;
+							obj_orientation[0] = ReadVec3DoublePrecision(GetAddress(0x0168, iStack192 + 24));
+							obj_orientation[1] = ReadVec3DoublePrecision(GetAddress(0x0168, iStack192 + 48));
+							obj_orientation[2] = ReadVec3DoublePrecision(GetAddress(0x0168, iStack192 + 72));
+
+							// The object's vertex buffer
+							int vb = mem_readd(GetAddress(0x0168, iStack192 + 0x64)); // Offset 0x64 (100)
+
+							// Face data
+							int face_data = mem_readd(GetAddress(0x0168, iStack192 + 0x6c));
+
+							for (int fidx = 0; fidx < num_faces; fidx++) {
+								int pfd = face_data + 0x80 * fidx;
+								int num_verts = mem_readb(GetAddress(0x0168, pfd + 0x71));
+
+								// Face's metadata
+								std::vector<char> fm_this;
+								for (int k=0; k<128; k++) { fm_this.push_back(mem_readb(GetAddress(0x0168, k+pfd))); }
+								fm.push_back(fm_this);
+
+								g_pointcloudview->BeginNewPolygon();
+								tot_num_faces ++;
+								int pindexbuffer = mem_readd(GetAddress(0x0168, pfd + 0x006c));
+								for (int vidx = 0; vidx < num_verts; vidx++) {
+									int vb_offset = mem_readd(GetAddress(0x0168, pindexbuffer + 2 * vidx)) & 0xFFFF;
+									glm::vec3 v_local = ReadVec3SinglePrecision(GetAddress(0x0168, vb + 12 * vb_offset));
+									glm::vec3 v_world = obj_pos + obj_orientation * v_local;
+									g_pointcloudview->AddGunVertex(v_world);
+									tot_num_verts ++;
+								}
+							}
+							g_pointcloudview->object_polygon_ranges.push_back(std::make_pair(tot_num_faces_before, tot_num_faces));
+							g_pointcloudview->face_metadata.push_back(fm);
+						}
+					}
+				}
+				sprintf(buf, "Total %d objects, %d faces, %d verts\n", dw5, tot_num_faces, tot_num_verts);
+							g_logview->AppendEntry(buf);
+			}
 		}
-	} else if (seg_cs == 0x0160 && ip == 0x2842aa) {
-		if (g_pointcloudview->should_append) {
-			unsigned eax = Get32BitRegister("eax");
-			Bit64u elt0 = MyReadQ(GetAddress(0x0168, eax));
-			Bit64u elt1 = MyReadQ(GetAddress(0x0168, eax+8));
-			Bit64u elt2 = MyReadQ(GetAddress(0x0168, eax+16));
-			double d0 = *(reinterpret_cast<double*>(&elt0));
-			double d1 = *(reinterpret_cast<double*>(&elt1));
-			double d2 = *(reinterpret_cast<double*>(&elt2));
-			glm::vec3 v = glm::vec3(float(d0), float(d1), float(d2));
-			g_pointcloudview->AddGunVertex(v);
+		else if (g_pointcloudview->should_append == true &&
+		         g_pointcloudview->num_verts > 0) {
+			g_pointcloudview->should_append = false;
+		}
+	}
+	
+	if (DUMP_METHOD == 2) {
+		if (seg_cs == 0x0160 && ip == 0x283ec3) {
+			g_pointcloudview->BeginNewPolygon();
+		} else if (seg_cs == 0x0160 && ip == 0x2842aa) {
+			if (g_pointcloudview->should_append) {
+				unsigned eax = Get32BitRegister("eax");
+				Bit64u elt0 = MyReadQ(GetAddress(0x0168, eax));
+				Bit64u elt1 = MyReadQ(GetAddress(0x0168, eax+8));
+				Bit64u elt2 = MyReadQ(GetAddress(0x0168, eax+16));
+				double d0 = *(reinterpret_cast<double*>(&elt0));
+				double d1 = *(reinterpret_cast<double*>(&elt1));
+				double d2 = *(reinterpret_cast<double*>(&elt2));
+				glm::vec3 v = glm::vec3(float(d0), float(d1), float(d2));
+				g_pointcloudview->AddGunVertex(v);
+			}
 		}
 	}
 }
@@ -880,7 +998,6 @@ PointCloudView::PointCloudView() {
 }
 
 void Camera::Apply() {
-	//
 	//
 	// 1. About data layout
 	// M is column-major
@@ -967,6 +1084,33 @@ void Camera::MoveAlongXZ(const float dx, const float dz) {
 	pos += (x*dx + z*dz);
 }
 
+void DrawHex(const std::vector<char>& data, int x, int y, int line_width, int char_limit) {
+	const int N = std::min(char_limit, int(data.size()));
+	int dx = x, dy = y;
+
+/*	glWindowPos2i(x, WIN_H - y + 4);
+	glColor3f(1, 1, 1);
+	for (char* ch = tmp; *ch != 0x00; ch++) {
+		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, *ch);
+	}
+*/
+
+	for (int i=0; i<N; i++) {
+		if (i % line_width == (line_width - 1)) {
+			dx = x; dy -= 15;
+		}
+		else if (i % line_width == 0) {
+			glWindowPos2i(dx, dy);
+		}
+		char buf[10];
+		snprintf(buf, 6, "%02X ", data[i]);
+		for (int i=0; i<2; i++) {
+			glutBitmapCharacter(GLUT_BITMAP_8_BY_13, buf[i]);
+		}
+		glutBitmapCharacter(GLUT_BITMAP_8_BY_13, ' ');
+	}
+}
+
 void PointCloudView::Render() {
 	const int PAD = 1;
 	const int x0 = x - PAD, x1 = x + w + PAD, y0 = WIN_H - (y - PAD), y1 = WIN_H - (y + h + PAD);
@@ -1004,9 +1148,7 @@ void PointCloudView::Render() {
 
 	camera.Apply();
 
-	//glRotatef(rot_x, 1, 0, 0);
-	//glRotatef(rot_y, 0, 1, 0);
-	
+	// Do not draw vertices
 	#if 0
 	glPointSize(3);
 	glBegin(GL_POINTS);
@@ -1034,6 +1176,9 @@ void PointCloudView::Render() {
 			p = &(polygons[i]);
 		}
 
+		bool vert_visited = true;
+		if (i < visited.size()) vert_visited = visited[i];
+
 		glBegin(GL_LINE_LOOP);
 		for (int j=0; j<int(p->size()); j++) {
 			glm::vec3 v = GunCoordToOpenglCoord(p->at(j));
@@ -1048,8 +1193,13 @@ void PointCloudView::Render() {
 			} else {
 				intensity = 1 - (dist / threshold * 0.8f);
 			}
-			//printf("dist=%g, intensity=%g\n", dist, intensity);
-			glColor3f(intensity, intensity, intensity);
+
+			// Set Color
+			if (vert_visited) {
+				glColor3f(intensity, intensity, intensity); 
+			}
+			else { glColor3f(intensity, intensity/3, intensity/3); }
+
 			glVertex3f(v.x - (center.x),
 								 v.y - (center.y), 
 								 v.z - (center.z));
@@ -1058,6 +1208,33 @@ void PointCloudView::Render() {
 
 		glColor3f(1, 1, 1);
 	}
+
+	// Draw the focused object
+	if (focused_object_idx != -999 && focused_object_idx < object_polygon_ranges.size()) {
+		std::pair<int, int> range = object_polygon_ranges[focused_object_idx];
+		glDisable(GL_DEPTH_TEST);
+		const int fc = range.second - range.first;
+		for (int j=0, pidx = range.first; j<=fc; j++, pidx++) {
+			std::vector<glm::vec3>* p;
+			if (pidx == int(polygons.size()) || j == fc) {
+				p = &(polygons[range.first + focused_face_idx]);
+			} else {
+				p = &(polygons[pidx]);
+			}
+
+			glBegin(GL_LINE_LOOP);
+			for (int k=0; k<p->size(); k++) {
+				glm::vec3 v = GunCoordToOpenglCoord(p->at(k));
+				if (j == fc) { glColor3f(1,1,0); }
+				else glColor3f(0, 1, 0);
+				glVertex3f(v.x - center.x, v.y - center.y, v.z - center.z);
+			}
+			glEnd();
+			glColor3f(1, 1, 1);
+		}
+		glEnable(GL_DEPTH_TEST);
+	}
+
 	glPopMatrix();
 
 	glMatrixMode(GL_PROJECTION);
@@ -1095,9 +1272,30 @@ void PointCloudView::Render() {
 	}
 
 	glWindowPos2i(x, WIN_H - y + 40);
-	const char* title = "Vertex View";
-	for (int i=0; i<strlen(title); i++) {
-		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, title[i]);
+
+	sprintf(tmp, "Vertex View Total %d objects, %d faces\n",
+	int(object_polygon_ranges.size()), int(polygons.size()));
+
+	for (int i=0; i<strlen(tmp); i++) {
+		glutBitmapCharacter(GLUT_BITMAP_HELVETICA_10, tmp[i]);
+	}
+
+	if (is_pointcloud_maximized && focused_object_idx != -999) {
+		if (focused_object_idx < object_metadata.size()) {
+			const float deltay = -8;
+			glWindowPos2i(x+3, WIN_H-y-2+deltay);
+			sprintf(tmp, "Object %d metadata:", focused_object_idx);
+			for (int i=0; i<strlen(tmp); i++) glutBitmapCharacter(GLUT_BITMAP_8_BY_13, tmp[i]);
+			DrawHex(object_metadata[focused_object_idx], x+3, WIN_H-y-17+deltay, 32, 128);
+
+			if (focused_object_idx < face_metadata.size() &&
+					focused_face_idx < face_metadata[focused_object_idx].size()) {
+				glWindowPos2i(x+3, WIN_H-y-80+deltay);
+				sprintf(tmp, "Face %d metadata:", focused_face_idx);
+				for (int i=0; i<strlen(tmp); i++) glutBitmapCharacter(GLUT_BITMAP_8_BY_13, tmp[i]);
+				DrawHex(face_metadata[focused_object_idx][focused_face_idx], x+3, WIN_H-y-95+deltay, 32, 128);
+			}
+		}
 	}
 }
 
@@ -1124,6 +1322,11 @@ void PointCloudView::Clear() {
 	sum   = glm::vec3(    0,     0,     0);
 	should_append = true;
 	num_verts = 0;
+	focused_face_idx   = -999;
+	focused_object_idx = -999;
+	object_polygon_ranges.clear();
+	object_metadata.clear();
+	face_metadata.clear();
 }
 
 void PointCloudView::RequestClear() {
@@ -1170,8 +1373,15 @@ void PointCloudView::ReadFromFile(const std::string& file_name) {
 		return;
 	}
 
+	Clear();
 	polygons.clear();
 	curr_polygon.clear();
+
+	std::vector<char> dummy;
+	for (int i=0; i<128; i++) { dummy.push_back(char(i)); }
+	object_metadata.push_back(dummy);
+
+	face_metadata.resize(1);
 
 	int n;
 	ifs.read((char*)&n, sizeof(int));
@@ -1184,12 +1394,16 @@ void PointCloudView::ReadFromFile(const std::string& file_name) {
 			ifs.read((char*)&v.x, sizeof(glm::vec3));
 			AddGunVertex(v);
 		}
+		dummy.clear();
+		for (int j=0; j<128; j++) { dummy.push_back(char((i+j)&0xFF)); }
+		face_metadata[0].push_back(dummy);
 	}
 
 	g_logview->AppendEntry("Loaded data from " + file_name + ", " + std::to_string(n) + " polygons");
 
 	glm::vec3 extent = bb_ub - bb_lb;
 	SetCrystalBallView(extent);
+	object_polygon_ranges.push_back(std::make_pair(0, int(polygons.size())));
 }
 
 void PointCloudView::ChangeSpeedMultiplier(const float mult) {
@@ -1215,5 +1429,45 @@ void PointCloudView::LoadXYWH() {
 }
 
 void PointCloudView::Maximize() {
-	x = 4; y = 40; w = WIN_W - 8; h = WIN_H - 44;
+	x = 4; y = 50; w = WIN_W - 8; h = WIN_H - 52;
+}
+
+void PointCloudView::SetVertexVisibility(int idx, bool v) {
+	if (idx >= visited.size()) { visited.resize(idx+1); }
+	visited[idx] = v;
+}
+
+void PointCloudView::CycleToNextFace()       { CycleOneFace( 1); }
+void PointCloudView::CycleToPreviousFace()   { CycleOneFace(-1); }
+void PointCloudView::CycleToNextObject()     { CycleObject( 1); }
+void PointCloudView::CycleToPreviousObject() { CycleObject(-1); }
+
+void PointCloudView::CycleOneFace(int inc) {
+	if (object_polygon_ranges.size() < 1) return;
+	if (inc != 0 && inc != 1 && inc != -1) return;
+	const int nf = object_polygon_ranges[focused_object_idx].second -
+	               object_polygon_ranges[focused_object_idx].first;
+	int noi = focused_object_idx;
+	int nfi = focused_face_idx + inc;
+	if (nfi < 0) {
+		noi--;
+		if (noi < 0) noi = int(object_polygon_ranges.size()) - 1;
+		nfi = object_polygon_ranges[noi].second - object_polygon_ranges[noi].first -1;
+	} else if (nfi >= nf) {
+		noi++;
+		if (noi >= int(object_polygon_ranges.size())) noi = 0;
+		nfi = 0;
+	}
+	focused_object_idx = noi;
+	focused_face_idx   = nfi;
+}
+
+void PointCloudView::CycleObject(int inc) {
+	if (object_polygon_ranges.size() < 1) return;
+	int noi = focused_object_idx;
+	noi += inc;
+	if (noi >= int(object_polygon_ranges.size())) noi = 0;
+	else if (noi < 0) { noi = int(object_polygon_ranges.size()) - 1; }
+	focused_object_idx = noi;
+	focused_face_idx = 0;
 }
