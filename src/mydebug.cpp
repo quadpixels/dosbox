@@ -1212,7 +1212,7 @@ void PointCloudView::Render() {
 	// Draw the focused object
 	if (focused_object_idx != -999 && focused_object_idx < object_polygon_ranges.size()) {
 		std::pair<int, int> range = object_polygon_ranges[focused_object_idx];
-		glDisable(GL_DEPTH_TEST);
+		glDepthFunc(GL_ALWAYS);
 		const int fc = range.second - range.first;
 		for (int j=0, pidx = range.first; j<=fc; j++, pidx++) {
 			std::vector<glm::vec3>* p;
@@ -1229,10 +1229,10 @@ void PointCloudView::Render() {
 				else glColor3f(0, 1, 0);
 				glVertex3f(v.x - center.x, v.y - center.y, v.z - center.z);
 			}
-			glEnd();
 			glColor3f(1, 1, 1);
+			glEnd();
 		}
-		glEnable(GL_DEPTH_TEST);
+		glDepthFunc(GL_LESS);
 	}
 
 	glPopMatrix();
