@@ -648,7 +648,12 @@ void keyboard(unsigned char key, int x, int y) {
 			g_memview->SetAddress(0x8394f0);
 			break;
 		}
-		case 'g': g_gun_debug = !g_gun_debug; break;
+		case 'g': {
+			g_gun_debug = !g_gun_debug;
+			if (g_gun_debug) { g_logview->AppendEntry("g_gun_debug is true"); }
+			else { g_logview->AppendEntry("g_gun_debug is false"); }
+			break;
+		}
 #endif
 		case 'i': g_flags.set(0); break;
 		case 'k': g_flags.set(1); break;
@@ -820,6 +825,17 @@ glm::vec3 ReadVec3SinglePrecision(PhysPt address) {
 }
 
 int g_curr_vertex_idx = 0;
+int g_curr_thing_load_idx = 0;
+
+#define GUN_VERSION 136
+
+#if GUN_VERSION == 136
+const unsigned IP_FREAD = 0x26ba70;
+const unsigned IP_THING_LOADBIN = 0x25e920;
+#else  // v1.0
+const unsigned IP_FREAD = 0x26b010;
+const unsigned IP_THING_LOADBIN = 0x25dfa0;
+#endif
 
 void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int* status) {
 	// GUN DBG
@@ -854,6 +870,28 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int*
 			//g_logview->AppendEntry("Attempting to reveal");
 			*status = 1;
 		}
+	} else if (seg_cs == 0x0160 && ip == 0x26b010) {
+		// unsigned eax = Get32BitRegister("eax");
+		// unsigned ebx = Get32BitRegister("ebx");
+		// unsigned ecx = Get32BitRegister("ecx");
+		// unsigned edx = Get32BitRegister("edx");
+		// sprintf(buf, "fread(0x%x, 0x%x, 0x%x, 0x%x)", eax, ebx, ecx, edx);
+		// g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == IP_THING_LOADBIN) {
+		g_logview->AppendEntry("thing_loadbin");
+		g_curr_thing_load_idx = 0;
+	} else if (seg_cs == 0x0160 && ip == 0x25e983) {
+		unsigned eax = Get32BitRegister("eax");
+		unsigned var_28h = GetStackVar(0x0024);
+		sprintf(buf, "thing[%d] eax=0x%x var_28h=%d", g_curr_thing_load_idx, eax, var_28h);
+		g_logview->AppendEntry(buf);
+		g_curr_thing_load_idx++;
+	} else if (seg_cs == 0x0160 && ip == 0x25ea45) {
+		unsigned eax = Get32BitRegister("eax");
+		unsigned char puVar6_0xd8 = mem_readb(GetAddress(0x0160, eax + 0x5d50e8));
+		unsigned      puVar6_0xcf = mem_readd(GetAddress(0x0160, eax + 0x5d50c4));
+		sprintf(buf, "thing_loadbin thing[%d] 0x%x 0x%x", g_curr_thing_load_idx, puVar6_0xd8, puVar6_0xcf);
+		g_logview->AppendEntry(buf);
 	}
 
 	const bool DUMP_METHOD = 1; // 1: Dump everything at the beginning
