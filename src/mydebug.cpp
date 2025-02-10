@@ -826,15 +826,22 @@ glm::vec3 ReadVec3SinglePrecision(PhysPt address) {
 
 int g_curr_vertex_idx = 0;
 int g_curr_thing_load_idx = 0;
+bool g_should_track_fread = false;
 
-#define GUN_VERSION 136
+#define GUN_VERSION 135
 
-#if GUN_VERSION == 136
+#if GUN_VERSION == 100
 const unsigned IP_FREAD = 0x26ba70;
 const unsigned IP_THING_LOADBIN = 0x25e920;
-#else  // v1.0
+const unsigned IP_engine_render3dmap = 0x283e7e;
+const unsigned IP_engine_render3dmap_clear_eax = 0x283cb0;  // xor eax, eax
+const unsigned ADDR_num_sectors = 0x490eac;
+#else  // 135
 const unsigned IP_FREAD = 0x26b010;
 const unsigned IP_THING_LOADBIN = 0x25dfa0;
+const unsigned IP_engine_render3dmap = 0x28535e;
+const unsigned IP_engine_render3dmap_clear_eax = 0x285190;  // xor eax, eax
+const unsigned ADDR_num_sectors = 0x493050;
 #endif
 
 void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int* status) {
@@ -854,7 +861,7 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int*
 		sprintf(buf, "%04X:%08X, 0x5214a0:[%d,%d,%d,%d], ustack56=%X", seg_cs, ip,
 		  dw0, dw1, dw2, dw3, dw4);
 		g_logview->AppendEntry(buf);
-	} else if (seg_cs == 0x0160 && ip == 0x283e7e) {
+	} else if (seg_cs == 0x0160 && ip == IP_engine_render3dmap) {
 		if (g_gun_reveal_minimap) {
 
 			// Determine if player can see this face
@@ -870,13 +877,13 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int*
 			//g_logview->AppendEntry("Attempting to reveal");
 			*status = 1;
 		}
-	} else if (seg_cs == 0x0160 && ip == 0x26b010) {
-		// unsigned eax = Get32BitRegister("eax");
-		// unsigned ebx = Get32BitRegister("ebx");
-		// unsigned ecx = Get32BitRegister("ecx");
-		// unsigned edx = Get32BitRegister("edx");
-		// sprintf(buf, "fread(0x%x, 0x%x, 0x%x, 0x%x)", eax, ebx, ecx, edx);
-		// g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == IP_FREAD && g_should_track_fread) {
+		unsigned eax = Get32BitRegister("eax");
+		unsigned ebx = Get32BitRegister("ebx");
+		unsigned ecx = Get32BitRegister("ecx");
+		unsigned edx = Get32BitRegister("edx");
+		sprintf(buf, "fread(0x%x, 0x%x, 0x%x, 0x%x)", eax, ebx, ecx, edx);
+		g_logview->AppendEntry(buf);
 	} else if (seg_cs == 0x0160 && ip == IP_THING_LOADBIN) {
 		g_logview->AppendEntry("thing_loadbin");
 		g_curr_thing_load_idx = 0;
@@ -892,13 +899,16 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int*
 		unsigned      puVar6_0xcf = mem_readd(GetAddress(0x0160, eax + 0x5d50c4));
 		sprintf(buf, "thing_loadbin thing[%d] 0x%x 0x%x", g_curr_thing_load_idx, puVar6_0xd8, puVar6_0xcf);
 		g_logview->AppendEntry(buf);
+	} else if (seg_cs == 0x0160 && ip == 0x2254d0) {
+		g_logview->AppendEntry("playerstatus_loadbin");
+		g_should_track_fread = true;
 	}
 
 	const bool DUMP_METHOD = 1; // 1: Dump everything at the beginning
 	                            // 2: Dump everything during the rendering process
 
 	// Polygon capture process
-	if (seg_cs == 0x0160 && ip == 0x283cb0) { // Entry point is 283c90, setting ESI done at 283cb0
+	if (seg_cs == 0x0160 && ip == IP_engine_render3dmap_clear_eax) { // Entry point is 283c90, setting ESI done at 283cb0
 		g_curr_vertex_idx = 0;
 		if (g_pointcloudview->should_clear) {
 			g_pointcloudview->should_clear = false;
@@ -906,16 +916,11 @@ void MyDebugOnInstructionEntered(unsigned cs, unsigned seg_cs, unsigned ip, int*
 			g_pointcloudview->should_append = true;
 
 			// SCRAPE
-
-			int dw5 = mem_readd(GetAddress(0x0160, 0x490eac));
+			int dw5 = mem_readd(GetAddress(0x0160, ADDR_num_sectors));
 			
 			// Level 1 descriptor size is 0x18
 			int fStack160 = GetStackVar(0x3bc); // ESP + 0x3BC
 			int inEax19 = GetSourceVar(0x13);
-
-
-			sprintf(buf, "[490eac]=%d, fStack160=%X, *in_EAX[0x13]=%d", dw5, fStack160, inEax19);
-			g_logview->AppendEntry(buf);
 
 			if (DUMP_METHOD == 1) {
 				int tot_num_faces = 0, tot_num_verts = 0;
